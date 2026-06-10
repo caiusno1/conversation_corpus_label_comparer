@@ -36,6 +36,25 @@ coverage across those corpora.
 
 Python ≥ 3.10.
 
+### 3.1 Licensing — the project stays MIT
+
+- The repository is MIT-licensed and **can stay MIT**. PySide6 is **LGPLv3**, not GPL: the
+  LGPL explicitly allows applications that merely *use* the library to keep their own license
+  (MIT, proprietary, …). Only PyQt6 (GPLv3 / commercial) would force a license change — that
+  is exactly why this plan uses PySide6 and not PyQt6.
+- `import PySide6` loads Qt as shared libraries at runtime (dynamic linking), which is the
+  LGPL-compliant usage mode. Obligations, all easy to meet:
+  1. don't ship a modified Qt/PySide6 (we don't — plain pip dependency);
+  2. users must be able to replace the Qt libraries with their own build — trivially true for
+     a pip-installed app, and for the PyInstaller stretch goal it is satisfied by using
+     **one-folder mode** (Qt libraries remain separate, replaceable files);
+  3. acknowledge the use of Qt/PySide6 under LGPLv3 (README / About dialog) and include a
+     copy of or link to the LGPLv3 text.
+- Caution for future features: a few Qt **add-on** modules are GPL-only (e.g. Qt Charts,
+  Qt Data Visualization) and must be avoided — the stretch-goal chart therefore uses
+  matplotlib (BSD-style) instead.
+- Other dependencies: pympi-ling is MIT, matplotlib is BSD-style — both MIT-compatible.
+
 ## 4. Architecture
 
 Strict separation: **core (parsing + analysis) is pure Python with no Qt imports**, fully unit
@@ -221,7 +240,7 @@ Edge-case policy (defaults, each surfaced in the UI rather than hidden):
 | 5 | View 1 | filesystem panel, corpora tree, full drag & drop, corpus management |
 | 6 | View 2 | selection form, counts table + Σ/mean/σ, coverage table + mean coverage |
 | 7 | Polish | project save/load, CSV export, background parsing/caching, error reporting |
-| 8 | (Stretch) | Ctrl+drag copy, multi-label selection, bar chart (matplotlib), PyInstaller build |
+| 8 | (Stretch) | Ctrl+drag copy, multi-label selection, bar chart (matplotlib), PyInstaller build (one-folder mode, see §3.1) |
 
 Milestones 2–3 are pure-Python and reviewable independently of any UI work.
 
