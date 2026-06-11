@@ -14,6 +14,11 @@ coverage across those corpora.
 2. **Analysis View** — for every tier that follows a *dictionary* (in ELAN terms: a tier whose
    linguistic type references a **Controlled Vocabulary**), count annotations and compute
    coverage statistics over the files of a corpus.
+3. **Query View** — visually build complex queries over one corpus's annotations (labels from
+   tiers combined with at least AND / OR / NOT, plus a maximum temporal distance the
+   annotations may be away from each other), step through the matched instances one by one in
+   a tier timeline (query tiers + freely selectable additional tiers), and feed the selected
+   instances into the same descriptive statistics as the Analysis View.
 
 ## 2. Key domain mapping (ELAN → app)
 
@@ -66,17 +71,20 @@ src/cclc/
 ├── core/
 │   ├── elan_document.py     # ElanDocument: parse one .eaf → tiers, annotations, CVs
 │   ├── corpus.py            # Corpus, CorpusProject (the internal data structure)
-│   └── analysis.py          # pure functions: counts, mean/stdev, coverage
+│   ├── analysis.py          # pure functions: counts, mean/stdev, coverage
+│   └── query.py             # query AST (term/AND/OR/NOT + max distance), evaluator → instances
 ├── ui/
-│   ├── main_window.py       # QMainWindow with QTabWidget: "Corpora" | "Analysis"
+│   ├── main_window.py       # QMainWindow with QTabWidget: "Corpora" | "Analysis" | "Query"
 │   ├── config_view.py       # View 1: filesystem panel + corpora tree, drag & drop
 │   ├── analysis_view.py     # View 2: selection form + result tables
+│   ├── query_view.py        # View 3: visual query builder + instance browser + statistics
 │   └── models.py            # Qt item models (corpora tree, result tables)
 └── tests/
     ├── data/                # small fixture .eaf files (incl. CVs, edge cases)
     ├── test_elan_document.py
     ├── test_corpus.py
-    └── test_analysis.py
+    ├── test_analysis.py
+    └── test_query.py
 ```
 
 ### 4.1 Core data model
@@ -113,6 +121,13 @@ class CorpusProject:
     corpora: list[Corpus]
     # operations: add/rename/remove corpus, add file, move file (corpus → corpus),
     # remove file; save/load as JSON
+
+@dataclass
+class Instance:               # one query match ("compound"), produced by core/query.py
+    file: Path
+    matched: dict[str, Annotation]   # term id → matched annotation
+    start_ms: int                    # min start over the matched annotations
+    end_ms: int                      # max end over the matched annotations
 ```
 
 Decisions:
@@ -220,31 +235,123 @@ Edge-case policy (defaults, each surfaced in the UI rather than hidden):
   progress indicator (results cached per file mtime, so recomputation is instant afterwards).
 - **Export CSV** for both tables (counts and coverage).
 
-## 7. Testing strategy
+## 7. View 3 — Query & instance browser
+
+Third tab ("Query"). Visually composed boolean queries over the annotations of **one corpus**
+with a temporal proximity constraint; the matches ("instances") can be stepped through one by
+one and then handed over to the same descriptive statistics as in View 2.
+
+```
+┌─ Corpora ─┬─ Analysis ─┬─ Query ─────────────────────────────────────┐
+│ Corpus: [Corpus A ▾]                     Max distance: [2000] ms     │
+│ ── Query builder ──────────────────────────────────────────────────  │
+│ │ ALL of                                        [+ term] [+ group] │ │
+│ │ ├─ Gesture_L = “point”                                     NOT ☐ │ │
+│ │ ├─ ANY of                                                  NOT ☐ │ │
+│ │ │   ├─ Head = “nod”                                              │ │
+│ │ │   └─ Head = “shake”                                            │ │
+│ │ └─ Speech = “overlap”                                      NOT ☑ │ │
+│ │  ≙  point AND (nod OR shake) AND NOT overlap, within 2000 ms     │ │
+│ [Run query]                                 87 instances in 9 files  │
+│ ── Instances ───────────────────────  [◀ Prev]  12 / 87  [Next ▶] ─  │
+│ │ session03.eaf    00:04:12.3 – 00:04:13.1             selected ☑ │ │
+│ │ Gesture_L ───[point]───────────────────                         │ │
+│ │ Head      ─────────[nod]───────────────    (context ± 2 s)      │ │
+│ │ Speech    ───────────────[laugh]───────                         │ │
+│ │ visible tiers: ☑ query tiers   ☐ Gesture_R  ☑ Speech  …         │ │
+│ [Select all] [Deselect all]      [Use 64 selected → statistics]      │
+│ │ File │ Instances │ …    Σ · mean/file · σ          [Export CSV] │ │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+### 7.1 Query model (`core/query.py`)
+
+- **Term** = *tier + label*, e.g. `Gesture_L = "point"`. Labels are offered from the tier's
+  dictionary (same logic as View 2); for non-dictionary tiers a free-text equals match is
+  allowed.
+- **Operators:** AND-groups ("ALL of") and OR-groups ("ANY of") with arbitrary nesting;
+  **NOT** is a toggle on any term or group. A query must contain at least one non-negated
+  term.
+- **Max distance `D` (ms):** set per query (optional override per AND-group). The distance
+  between two annotations is the **gap between their time intervals** — overlapping or
+  touching annotations have distance 0. All annotations forming one instance must be
+  **pairwise** ≤ `D` apart ("maximally away from each other").
+- **Instance (compound) & counting semantics:** the first non-negated term is the *anchor*.
+  Each annotation matching the anchor yields **at most one instance**: the evaluator searches
+  the anchor's `D`-neighborhood for the nearest annotations satisfying the remaining
+  expression. `point AND nod` therefore counts *point gestures that have a nod nearby* —
+  interpretable counts instead of a combinatorial pair explosion (the alternative "every
+  satisfying combination" is listed as an open question).
+- **NOT semantics:** a negated term/group is satisfied iff **no** matching annotation lies
+  within distance `D` of the instance's positive annotations.
+- Evaluation per file (annotations sorted by time, windowed join), concatenated over the
+  corpus, run in a background thread; result: `list[Instance]`.
+
+### 7.2 Visual query builder
+
+- A tree that mirrors the expression: group nodes ("ALL of" / "ANY of") and term rows
+  (tier combo + label combo + NOT checkbox); buttons *add term*, *add group*, *delete*;
+  drag to re-order or re-nest.
+- The equivalent readable expression is displayed live underneath
+  (`point AND (nod OR shake) AND NOT overlap, within 2000 ms`).
+- Validation with inline messages (only-NOT query, empty group, tier missing in corpus).
+- **Saved queries:** name + expression stored in the project JSON (should-have).
+
+### 7.3 Instance browser
+
+- Result table: instance number, file, time range, matched label per term; status line with
+  the total ("87 instances in 9 files").
+- **One-by-one navigation:** Prev/Next buttons and arrow keys, position indicator "12 / 87".
+- Detail panel = **timeline excerpt** (custom-painted `QGraphicsView`): one row per visible
+  tier, annotation boxes with their labels, the instance's matched annotations highlighted,
+  context padding ±2 s (configurable).
+- **Visible tiers:** the tiers used in the query are always shown; any additional tiers of
+  the corpus can be toggled on/off via a checklist.
+- Media playback is out of scope for v1 (stretch goal: "open file in ELAN" shortcut).
+
+### 7.4 Hand-off to statistics ("next analysis step")
+
+- Every result row carries a checkbox (default: selected); *Select all / Deselect all*;
+  instances can also be (de)selected while stepping through them in the browser.
+- "Use selected instances → statistics" computes — re-using the View 2 components and the
+  definitions of §6.2, with instances in place of single labels — over the **selected**
+  instances: instances per file, Σ total, mean per file, sample σ (files of the corpus
+  without any instance count as 0); optional breakdown by matched label combination;
+  CSV export.
+- The selection is kept as a plain `list[Instance]`, so later steps (query chaining, further
+  exports) can build on it.
+
+## 8. Testing strategy
 
 - Hand-crafted fixture `.eaf` files in `tests/data/`: minimal file with 2 CV tiers + 1 free
   tier; file with EAF 2.8 `CV_ENTRY_ML`; file with out-of-dictionary values; file missing a
-  tier; an invalid XML file.
+  tier; an invalid XML file; a file with precisely timed annotations across several tiers for
+  the distance/co-occurrence cases.
 - Unit tests for parsing (tiers/CV extraction), corpus operations (move/duplicate rules,
   JSON round-trip), and every metric in §6.2 against hand-computed values.
+- Query engine tests (§7.1): AND/OR/NOT, nesting, distance boundary (gap exactly `D`),
+  overlap = 0 ms, NOT exclusion within the window, anchored counting, multi-file
+  concatenation — all against hand-computed instance lists.
 - UI smoke test (optional, `pytest-qt`): build main window, simulate a drop, switch views.
 
-## 8. Milestones
+## 9. Milestones
 
 | # | Deliverable | Contents |
 |---|---|---|
 | 1 | Scaffolding | `pyproject.toml` (PySide6, pympi-ling; dev: pytest, ruff), package skeleton, fixtures |
 | 2 | Core: ELAN parsing | `ElanDocument` + CV extraction + tests |
 | 3 | Core: corpora + analysis | `CorpusProject`, all §6.2 metrics + tests |
-| 4 | UI shell | `MainWindow`, two tabs, status bar |
+| 4 | UI shell | `MainWindow`, three tabs, status bar |
 | 5 | View 1 | filesystem panel, corpora tree, full drag & drop, corpus management |
 | 6 | View 2 | selection form, counts table + Σ/mean/σ, coverage table + mean coverage |
-| 7 | Polish | project save/load, CSV export, background parsing/caching, error reporting |
-| 8 | (Stretch) | Ctrl+drag copy, multi-label selection, bar chart (matplotlib), PyInstaller build (one-folder mode, see §3.1) |
+| 7 | Core: query engine | query AST (AND/OR/NOT, max distance), anchored evaluator, `Instance` + tests |
+| 8 | View 3 | visual query builder, instance browser with tier timeline, statistics hand-off |
+| 9 | Polish | project save/load (incl. saved queries), CSV export, background parsing/caching, error reporting |
+| 10 | (Stretch) | Ctrl+drag copy, multi-label selection, bar chart (matplotlib), "open in ELAN", PyInstaller build (one-folder mode, see §3.1) |
 
-Milestones 2–3 are pure-Python and reviewable independently of any UI work.
+Milestones 2–3 and 7 are pure-Python and reviewable independently of any UI work.
 
-## 9. Open questions
+## 10. Open questions
 
 1. Coverage is defined per *(file, tier)* with the mean taken per tier across files — is an
    additional per-file aggregate (union of labels over all tiers of the file) wanted?
@@ -254,3 +361,11 @@ Milestones 2–3 are pure-Python and reviewable independently of any UI work.
 4. Files missing a tier: keep "count as 0" (current default, n = all files) or exclude them
    from mean/σ?
 5. UI language English only, or German as well?
+6. Query distance: gap between the annotation intervals (current default) or
+   onset-to-onset distance?
+7. Instance counting: one instance per anchor annotation (current default) or every
+   satisfying combination of annotations?
+8. Should NOT exclude matches only within the distance window `D` (current default), or
+   whenever the negated label occurs anywhere in the file?
+9. For the instance statistics (§7.4): are per-file instance counts sufficient, or is a
+   breakdown by matched label combination needed as well?
