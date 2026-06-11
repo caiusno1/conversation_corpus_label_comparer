@@ -8,7 +8,7 @@ See [PLAN.md](PLAN.md) for the full design and the resolved design decisions.
 
 ## Features
 
-Three views (tabs):
+Four views (tabs):
 
 1. **Corpora** — pick `.eaf` files from a filesystem tree and organise them into
    named corpora by drag & drop (from the panel, from the OS file manager, and
@@ -18,7 +18,11 @@ Three views (tabs):
    per file (total, mean, sample standard deviation), and show dictionary
    coverage per file plus the mean coverage across the corpus. Out-of-dictionary
    values are reported separately. CSV export.
-3. **Query** — build boolean queries (AND / OR / NOT, nestable) over annotation
+3. **Interval** — pick a tier and a fixed time window (bounds adjustable by
+   sliders *and* exact millisecond fields, kept in sync) and see, per file, the
+   count of every dictionary label annotated within that window, plus the
+   dictionary coverage restricted to the interval. CSV export.
+4. **Query** — build boolean queries (AND / OR / NOT, nestable) over annotation
    labels with a maximum temporal distance (measured at the beginning, midpoint,
    or end of annotations) or an Allen-style interval relation. Step through the
    matched instances one by one in a tier timeline, choose which tiers are

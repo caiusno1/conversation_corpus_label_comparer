@@ -17,6 +17,7 @@ from cclc.core.corpus import CorpusProject
 from .analysis_view import AnalysisView
 from .config_view import ConfigView
 from .controller import ProjectController
+from .interval_view import IntervalView
 from .query_view import QueryView
 
 
@@ -30,6 +31,7 @@ class MainWindow(QMainWindow):
         tabs = QTabWidget()
         tabs.addTab(ConfigView(self.controller), "Corpora")
         tabs.addTab(AnalysisView(self.controller), "Analysis")
+        tabs.addTab(IntervalView(self.controller), "Interval")
         tabs.addTab(QueryView(self.controller), "Query")
         self.setCentralWidget(tabs)
 

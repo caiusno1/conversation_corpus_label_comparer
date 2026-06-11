@@ -19,6 +19,10 @@ coverage across those corpora.
    annotations may be away from each other), step through the matched instances one by one in
    a tier timeline (query tiers + freely selectable additional tiers), and feed the selected
    instances into the same descriptive statistics as the Analysis View.
+4. **Interval View** — for a selectable tier of one corpus, collect all labels whose
+   annotations lie within a fixed time interval (bounds slidable *and* directly enterable as
+   numbers) and list the counts per file and label, plus the dictionary coverage restricted
+   to that interval.
 
 ## 2. Key domain mapping (ELAN → app)
 
@@ -74,10 +78,11 @@ src/cclc/
 │   ├── analysis.py          # pure functions: counts, mean/stdev, coverage
 │   └── query.py             # query AST (term/AND/OR/NOT + max distance), evaluator → instances
 ├── ui/
-│   ├── main_window.py       # QMainWindow with QTabWidget: "Corpora" | "Analysis" | "Query"
+│   ├── main_window.py       # QMainWindow, tabs: "Corpora" | "Analysis" | "Interval" | "Query"
 │   ├── config_view.py       # View 1: filesystem panel + corpora tree, drag & drop
 │   ├── analysis_view.py     # View 2: selection form + result tables
 │   ├── query_view.py        # View 3: visual query builder + instance browser + statistics
+│   ├── interval_view.py     # View 4: per-file label counts within a time window
 │   └── models.py            # Qt item models (corpora tree, result tables)
 └── tests/
     ├── data/                # small fixture .eaf files (incl. CVs, edge cases)
@@ -346,7 +351,25 @@ one and then handed over to the same descriptive statistics as in View 2.
 - The selection is kept as a plain `list[Instance]`, so later steps (query chaining, further
   exports) can build on it.
 
-## 8. Testing strategy
+## 8. View 4 — Interval inspection
+
+Fourth tab ("Interval"). For one corpus and one dictionary tier, all labels whose annotations
+lie within a fixed time interval are collected; the table lists the count of every dictionary
+label per file plus the dictionary coverage restricted to the interval.
+
+- **Interval bounds:** a From/To pair, each adjustable by a **slider** *and* an exact
+  **millisecond spin box**, kept in sync. The slider range follows the longest annotation
+  end time of the corpus. `From ≤ To` is enforced by pushing the other bound along.
+- **Containment mode:** *contained* (the annotation lies fully inside the bounds,
+  boundary-inclusive — the default reading of "within") or *overlapping* (the annotation
+  intersects the interval; merely touching an edge does not count).
+- **Table:** one row per file; one count column per dictionary label, plus an
+  out-of-dictionary column and a coverage column (`covered/|D|` as in §6.2, but only labels
+  annotated **within the interval** count as covered). Mean coverage underneath; CSV export.
+- The missing-tier hard error and the case-sensitivity toggle of §6.2 apply unchanged.
+- Recomputed live while sliding (per-file parses are cached, so this stays instant).
+
+## 9. Testing strategy
 
 - Hand-crafted fixture `.eaf` files in `tests/data/`: minimal file with 2 CV tiers + 1 free
   tier; file with EAF 2.8 `CV_ENTRY_ML`; file with out-of-dictionary values; file missing a
@@ -361,26 +384,30 @@ one and then handed over to the same descriptive statistics as in View 2.
   concatenation — all against hand-computed instance lists.
 - Error paths: a tier missing in one file of the corpus blocks analysis and query with the
   expected message naming the file; invalid `.eaf` files are rejected on import.
+- Interval tests (§8): containment boundary inclusivity, overlapping vs contained vs merely
+  touching, interval-restricted coverage, corpus time extent, bound ordering in the UI.
 - UI smoke test (optional, `pytest-qt`): build main window, simulate a drop, switch views.
 
-## 9. Milestones
+## 10. Milestones
 
 | # | Deliverable | Contents |
 |---|---|---|
 | 1 | Scaffolding | `pyproject.toml` (PySide6, pympi-ling; dev: pytest, ruff), package skeleton, fixtures |
 | 2 | Core: ELAN parsing | `ElanDocument` + CV extraction + tests |
 | 3 | Core: corpora + analysis | `CorpusProject`, all §6.2 metrics + tests |
-| 4 | UI shell | `MainWindow`, three tabs, status bar |
+| 4 | UI shell | `MainWindow`, tab per view, status bar |
 | 5 | View 1 | filesystem panel, corpora tree, full drag & drop, corpus management |
 | 6 | View 2 | selection form, counts table + Σ/mean/σ, coverage table + mean coverage |
 | 7 | Core: query engine | query AST (AND/OR/NOT, max distance + reference point, interval relations), evaluator with both counting modes, near-anchor NOT, `Instance` + tests |
 | 8 | View 3 | visual query builder, instance browser with tier timeline, statistics hand-off incl. combination breakdown |
-| 9 | Polish | project save/load (incl. saved queries), CSV export, background parsing/caching, error reporting |
-| 10 | (Stretch) | Ctrl+drag copy, multi-label selection, bar chart (matplotlib), "open in ELAN", PyInstaller build (one-folder mode, see §3.1) |
+| 9 | View 4 | interval label counts with slidable/enterable bounds, interval-restricted coverage |
+| 10 | Polish | project save/load (incl. saved queries), CSV export, background parsing/caching, error reporting |
+| 11 | (Stretch) | Ctrl+drag copy, multi-label selection, bar chart (matplotlib), "open in ELAN", PyInstaller build (one-folder mode, see §3.1) |
 
-Milestones 2–3 and 7 are pure-Python and reviewable independently of any UI work.
+Milestones 2–3, 7 and the core part of 9 are pure-Python and reviewable independently of any
+UI work.
 
-## 10. Resolved decisions
+## 11. Resolved decisions
 
 All former open questions were decided with the project owner (2026-06-11):
 

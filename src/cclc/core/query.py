@@ -4,7 +4,7 @@ A query combines *terms* (``tier = label``) with AND / OR / NOT and a temporal
 constraint, and produces *instances* ("compounds"): sets of co-occurring
 annotations.  The engine is pure Python and unit-tested.
 
-Semantics (see PLAN.md sections 7.1 and 10):
+Semantics (see PLAN.md sections 7.1 and 11):
 
 * **Reference point** - distance between two annotations is the absolute
   difference of a selectable point: ``begin``, ``mid`` or ``end``.

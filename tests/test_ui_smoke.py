@@ -57,9 +57,9 @@ def test_query_view_runs(app, tmp_path):
     controller.add_corpus("C")
     controller.add_files("C", [f])
 
-    # The Query view is the third tab.
+    # The Query view is the fourth tab (Corpora, Analysis, Interval, Query).
     tabs = window.centralWidget()
-    query_view = tabs.widget(2)
+    query_view = tabs.widget(3)
     query_view.corpus_combo.setCurrentText("C")
 
     # Programmatically populate the builder: point AND nod.
@@ -80,3 +80,47 @@ def test_query_view_runs(app, tmp_path):
     # Hand off to statistics.
     query_view._compute_statistics()
     assert "total: 1" in query_view.stats_summary.text()
+
+
+def test_interval_view_counts_and_coverage(app, tmp_path):
+    window = MainWindow()
+    controller = window.controller
+    f1 = write_eaf(
+        tmp_path / "f1.eaf",
+        tiers={"G": [("a", 0, 100), ("b", 200, 300), ("c", 900, 1000)]},
+        cvs={"cv": ["a", "b", "c", "d"]},
+        tier_cv={"G": "cv"},
+    )
+    f2 = write_eaf(
+        tmp_path / "f2.eaf",
+        tiers={"G": [("d", 0, 50)]},
+        cvs={"cv": ["a", "b", "c", "d"]},
+        tier_cv={"G": "cv"},
+    )
+    controller.add_corpus("C")
+    controller.add_files("C", [f1, f2])
+
+    tabs = window.centralWidget()
+    interval_view = tabs.widget(2)  # Corpora, Analysis, Interval, Query
+    assert interval_view.corpus_combo.currentText() == "C"
+    assert interval_view.tier_combo.currentText() == "G"
+    # slider range follows the corpus extent (max end time = 1000 ms)
+    assert interval_view.hi_slider.maximum() == 1000
+    assert interval_view.hi_spin.value() == 1000
+
+    # narrow the window to [0, 400]: a and b inside, c outside; f2 keeps d
+    interval_view.hi_spin.setValue(400)
+    headers = [
+        interval_view.table.horizontalHeaderItem(c).text()
+        for c in range(interval_view.table.columnCount())
+    ]
+    assert headers == ["File", "a", "b", "c", "d", "Out-of-dict", "Coverage"]
+    assert interval_view.table.rowCount() == 2
+    row_f1 = 0 if interval_view.table.item(0, 0).text() == "f1.eaf" else 1
+    counts_f1 = [interval_view.table.item(row_f1, c).text() for c in range(1, 5)]
+    assert counts_f1 == ["1", "1", "0", "0"]
+    assert "37.5%" in interval_view.summary.text()
+
+    # bounds stay ordered: pushing From above To drags To along
+    interval_view.lo_spin.setValue(600)
+    assert interval_view.hi_spin.value() == 600

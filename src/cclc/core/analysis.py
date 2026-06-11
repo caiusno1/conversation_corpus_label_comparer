@@ -4,7 +4,7 @@ All functions operate on a :class:`~cclc.core.corpus.CorpusProject` and a
 :class:`~cclc.core.corpus.Corpus`.  They contain no UI code and are covered by
 unit tests against hand-computed values.
 
-Policy decisions (see PLAN.md section 10):
+Policy decisions (see PLAN.md section 11):
 
 * A tier that is missing in *any* file of the corpus is a hard error
   (:class:`MissingTierError`); analysis runs only when every file has the tier.
@@ -195,3 +195,115 @@ def coverage(
                 present.add(key)
         result.per_file_covered[path] = len(present)
     return result
+
+
+@dataclass
+class IntervalResult:
+    """Counts of every dictionary label within a time interval, per file.
+
+    Coverage mirrors :class:`CoverageResult` but is restricted to the interval:
+    a label counts as covered in a file when at least one of its annotations
+    lies within the interval.
+    """
+
+    tier_name: str
+    start_ms: int
+    end_ms: int
+    dictionary: list[str]
+    per_file_label_counts: dict[Path, dict[str, int]] = field(default_factory=dict)
+    out_of_dictionary: dict[Path, int] = field(default_factory=dict)
+
+    @property
+    def dictionary_size(self) -> int:
+        return len(self.dictionary)
+
+    @property
+    def per_file_covered(self) -> dict[Path, int]:
+        return {
+            p: sum(1 for v in counts.values() if v > 0)
+            for p, counts in self.per_file_label_counts.items()
+        }
+
+    @property
+    def per_file_percent(self) -> dict[Path, float]:
+        if self.dictionary_size == 0:
+            return {p: 0.0 for p in self.per_file_label_counts}
+        return {
+            p: 100.0 * covered / self.dictionary_size
+            for p, covered in self.per_file_covered.items()
+        }
+
+    @property
+    def mean_coverage(self) -> float:
+        percents = list(self.per_file_percent.values())
+        if not percents:
+            return 0.0
+        return statistics.fmean(percents)
+
+
+def interval_label_counts(
+    project: CorpusProject,
+    corpus: Corpus,
+    tier_name: str,
+    start_ms: int,
+    end_ms: int,
+    mode: str = "contained",
+    case_sensitive: bool = True,
+) -> IntervalResult:
+    """Count every dictionary label on ``tier_name`` within ``[start_ms, end_ms]``.
+
+    ``mode`` selects what "within" means: ``"contained"`` requires the whole
+    annotation to lie inside the bounds (boundary-inclusive); ``"overlapping"``
+    requires the annotation to intersect the interval (merely touching an edge
+    does not count).  Untimed annotations are skipped.  Raises
+    :class:`MissingTierError` if any file lacks the tier.
+    """
+    if mode not in ("contained", "overlapping"):
+        raise ValueError(f"unknown interval mode {mode!r}")
+    require_tier_everywhere(project, corpus, tier_name)
+    dictionary = union_dictionary(project, corpus, tier_name)
+    norm_to_canonical = {_norm(label, case_sensitive): label for label in dictionary}
+    result = IntervalResult(
+        tier_name=tier_name, start_ms=start_ms, end_ms=end_ms, dictionary=dictionary
+    )
+
+    for path in corpus.files:
+        tier = project.document(path).tiers[tier_name]
+        counts = {label: 0 for label in dictionary}
+        ood = 0
+        for ann in tier.annotations:
+            if ann.start_ms is None or ann.end_ms is None or not ann.value:
+                continue
+            if mode == "contained":
+                inside = ann.start_ms >= start_ms and ann.end_ms <= end_ms
+            else:
+                inside = ann.start_ms < end_ms and ann.end_ms > start_ms
+            if not inside:
+                continue
+            canonical = norm_to_canonical.get(_norm(ann.value, case_sensitive))
+            if canonical is None:
+                ood += 1
+            else:
+                counts[canonical] += 1
+        result.per_file_label_counts[path] = counts
+        result.out_of_dictionary[path] = ood
+    return result
+
+
+def corpus_time_extent(project: CorpusProject, corpus: Corpus) -> int:
+    """Largest annotation end time (ms) across all tiers and files; 0 if none.
+
+    Unreadable files are skipped - this feeds UI slider ranges and must not
+    fail because of one broken file.
+    """
+    extent = 0
+    for path in corpus.files:
+        try:
+            doc = project.document(path)
+        except Exception:  # noqa: BLE001
+            continue
+        for tier in doc.tiers.values():
+            for ann in tier.annotations:
+                if ann.end_ms is not None and ann.end_ms > extent:
+                    extent = ann.end_ms
+    return extent
