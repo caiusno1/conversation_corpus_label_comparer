@@ -198,7 +198,9 @@ Scope of all analysis: one selected **corpus**; only tiers that follow a diction
 ### 6.1 Selection form
 - **Corpus** combo box.
 - **Tier** combo box: union of dictionary-following tier names across the corpus's files
-  (matched by tier name); shows the associated CV name and dictionary size.
+  (matched by tier name); shows the associated CV name and dictionary size. Tiers that are
+  missing in at least one file of the corpus are marked and cannot be analyzed (see §6.2
+  edge-case policy).
 - **Label** combo box: the entries of that tier's dictionary. Dictionary = **union of the CV
   entries across all files** of the corpus for that tier (files may carry slightly different
   CV versions; the union keeps every label selectable — flagged in the UI when files disagree).
@@ -210,7 +212,8 @@ Scope of all analysis: one selected **corpus**; only tiers that follow a diction
 For corpus `C` with files `f₁…fₙ`, tier `T`, dictionary `D_T`, selected label `L ∈ D_T`:
 
 - **Count per file:** `count(fᵢ) = |{a ∈ annotations(fᵢ, T) : a.value == L}|`
-  (match via `CVE_REF` when present, else exact string match — case-sensitive).
+  (match via `CVE_REF` when present, else exact string match — case-sensitive by default,
+  switchable via the UI toggle described below).
 - **Total:** `Σ count(fᵢ)` over the corpus.
 - **Mean:** `Σ count(fᵢ) / n`.
 - **Standard deviation:** sample stdev (n−1) of the per-file counts; shown as "n/a" for n < 2.
@@ -219,13 +222,17 @@ For corpus `C` with files `f₁…fₙ`, tier `T`, dictionary `D_T`, selected la
   → 100 % ⇔ every dictionary label is annotated at least once in that file & tier.
 - **Mean coverage (per tier):** `(1/n) · Σ coverage(fᵢ, T)` across all files of the corpus.
 
-Edge-case policy (defaults, each surfaced in the UI rather than hidden):
-- File lacks tier `T` → shown as "—", **treated as count 0 / coverage 0 %** and included in
-  mean/σ/mean-coverage (n = corpus size, per the requirement "across all files"); a status
-  hint reports how many files lack the tier.
+Edge-case policy (decided):
+- **File lacks tier `T` → hard error.** An analysis (and likewise a query, §7.2) for tier `T`
+  can only be run when **every file of the corpus contains the tier**; otherwise execution is
+  blocked with an error stating exactly which file(s) lack the tier. If the tier exists but
+  contains no annotation with the searched label, the count is simply **0** and the file
+  participates normally in mean/σ/coverage.
 - Annotation value on a CV tier that is **not in the dictionary** (typo/free text) → excluded
   from counts and coverage, but reported in an "out-of-dictionary" column so data problems
   stay visible.
+- **Case sensitivity:** label matching is case-sensitive by default; a UI toggle switches the
+  analysis views (counts, coverage, queries) to case-insensitive matching.
 - Empty annotation values are ignored.
 - External CVs (`.ecv` via `EXT_REF`): resolve relative to the `.eaf` location; if
   unresolvable, warn and fall back to labels observed via `CVE_REF`/values.
@@ -281,14 +288,24 @@ one and then handed over to the same descriptive statistics as in View 2.
   *Example (reference = beginning):* annotation A on tier *a* starts at 5 ms, annotation B on
   tier *b* at 1000 ms → distance 995 ms. With `D` = 500 ms the pair is **not** a compound;
   with `D` = 1000 ms it is found as a match/compound.
+- **Interval relations (alternative constraint):** instead of a max distance, an AND-group
+  can require an Allen-style relation between the matched annotations — *overlaps*,
+  *contains/during*, *meets*, *starts together*, *ends together*. The max-distance constraint
+  remains the default.
 - **Instance (compound) & counting semantics:** the first non-negated term is the *anchor*.
-  Each annotation matching the anchor yields **at most one instance**: the evaluator searches
-  the anchor's `D`-neighborhood for the nearest annotations satisfying the remaining
-  expression. `point AND nod` therefore counts *point gestures that have a nod nearby* —
-  interpretable counts instead of a combinatorial pair explosion (the alternative "every
-  satisfying combination" is listed as an open question).
-- **NOT semantics:** a negated term/group is satisfied iff **no** matching annotation lies
-  within distance `D` of the instance's positive annotations.
+  By default each annotation matching the anchor yields **at most one instance**: the
+  evaluator searches the anchor's `D`-neighborhood for the nearest annotations satisfying the
+  remaining expression. `point AND nod` therefore counts *point gestures that have a nod
+  nearby* — interpretable counts instead of a combinatorial pair explosion. A **UI toggle**
+  switches to *every satisfying combination* semantics (all valid tuples become instances).
+- **NOT semantics (near-the-anchor rule):** a negated term/group rejects an instance iff a
+  matching annotation lies within max distance `D` of the **anchor** annotation.
+  Examples (`D` = 1000 ms):
+  - `A AND NOT B`: B 10 ms from A → rejected; B 1005 ms from A → instance kept.
+  - `A AND B AND NOT C` (anchor A): C 600 ms from A → rejected, even when C is 1100 ms
+    away from B; C 100 ms from B but 1100 ms from A → instance kept.
+  - If the positive part already fails (e.g. A and B more than `D` apart), no compound
+    exists in the first place — NOT never needs to be evaluated.
 - Evaluation per file (annotations sorted by time, windowed join), concatenated over the
   corpus, run in a background thread; result: `list[Instance]`.
 
@@ -299,7 +316,9 @@ one and then handed over to the same descriptive statistics as in View 2.
   drag to re-order or re-nest.
 - The equivalent readable expression is displayed live underneath
   (`point AND (nod OR shake) AND NOT overlap, within 2000 ms measured at beginning`).
-- Validation with inline messages (only-NOT query, empty group, tier missing in corpus).
+- Validation with inline messages (only-NOT query, empty group); a query tier that is missing
+  in at least one file of the corpus blocks execution with an error naming the file(s) — the
+  same rule as in View 2 (§6.2).
 - **Saved queries:** name + expression stored in the project JSON (should-have).
 
 ### 7.3 Instance browser
@@ -320,9 +339,10 @@ one and then handed over to the same descriptive statistics as in View 2.
   instances can also be (de)selected while stepping through them in the browser.
 - "Use selected instances → statistics" computes — re-using the View 2 components and the
   definitions of §6.2, with instances in place of single labels — over the **selected**
-  instances: instances per file, Σ total, mean per file, sample σ (files of the corpus
-  without any instance count as 0); optional breakdown by matched label combination;
-  CSV export.
+  instances: instances per file, Σ total, mean per file across the corpus, sample σ (files
+  of the corpus without any instance count as 0); a **breakdown by matched label
+  combination** (e.g. point+nod vs point+shake) is available behind a checkbox, disabled by
+  default; CSV export.
 - The selection is kept as a plain `list[Instance]`, so later steps (query chaining, further
   exports) can build on it.
 
@@ -336,8 +356,11 @@ one and then handed over to the same descriptive statistics as in View 2.
   JSON round-trip), and every metric in §6.2 against hand-computed values.
 - Query engine tests (§7.1): AND/OR/NOT, nesting, every reference-point mode
   (beginning/midpoint/end), distance boundary cases (distance exactly `D`; the 5 ms vs
-  1000 ms example from §7.1), NOT exclusion within the window, anchored counting, multi-file
+  1000 ms example from §7.1), the near-the-anchor NOT examples from §7.1, interval
+  relations, both counting modes (one-per-anchor / every combination), multi-file
   concatenation — all against hand-computed instance lists.
+- Error paths: a tier missing in one file of the corpus blocks analysis and query with the
+  expected message naming the file; invalid `.eaf` files are rejected on import.
 - UI smoke test (optional, `pytest-qt`): build main window, simulate a drop, switch views.
 
 ## 9. Milestones
@@ -350,29 +373,32 @@ one and then handed over to the same descriptive statistics as in View 2.
 | 4 | UI shell | `MainWindow`, three tabs, status bar |
 | 5 | View 1 | filesystem panel, corpora tree, full drag & drop, corpus management |
 | 6 | View 2 | selection form, counts table + Σ/mean/σ, coverage table + mean coverage |
-| 7 | Core: query engine | query AST (AND/OR/NOT, max distance), anchored evaluator, `Instance` + tests |
-| 8 | View 3 | visual query builder, instance browser with tier timeline, statistics hand-off |
+| 7 | Core: query engine | query AST (AND/OR/NOT, max distance + reference point, interval relations), evaluator with both counting modes, near-anchor NOT, `Instance` + tests |
+| 8 | View 3 | visual query builder, instance browser with tier timeline, statistics hand-off incl. combination breakdown |
 | 9 | Polish | project save/load (incl. saved queries), CSV export, background parsing/caching, error reporting |
 | 10 | (Stretch) | Ctrl+drag copy, multi-label selection, bar chart (matplotlib), "open in ELAN", PyInstaller build (one-folder mode, see §3.1) |
 
 Milestones 2–3 and 7 are pure-Python and reviewable independently of any UI work.
 
-## 10. Open questions
+## 10. Resolved decisions
 
-1. Coverage is defined per *(file, tier)* with the mean taken per tier across files — is an
-   additional per-file aggregate (union of labels over all tiers of the file) wanted?
-2. Should out-of-dictionary annotation values optionally be counted as part of the total
-   annotation count (currently: shown separately, excluded from metrics)?
-3. Label matching case-sensitive (current default) or case-insensitive?
-4. Files missing a tier: keep "count as 0" (current default, n = all files) or exclude them
-   from mean/σ?
-5. UI language English only, or German as well?
-6. The distance reference point (beginning/midpoint/end) is one global choice per query
-   (current default) — should it additionally be selectable per term (e.g. *end* of A to
-   *beginning* of B), or extended by interval relations such as "overlaps"?
-7. Instance counting: one instance per anchor annotation (current default) or every
-   satisfying combination of annotations?
-8. Should NOT exclude matches only within the distance window `D` (current default), or
-   whenever the negated label occurs anywhere in the file?
-9. For the instance statistics (§7.4): are per-file instance counts sufficient, or is a
-   breakdown by matched label combination needed as well?
+All former open questions were decided with the project owner (2026-06-11):
+
+1. **Coverage** is reported per *(file, tier)* with mean coverage per tier across files only
+   — no additional per-file aggregate across tiers.
+2. **Out-of-dictionary values** are reported in their own column and excluded from counts and
+   coverage (§6.2).
+3. **Label matching** is case-sensitive by default, with a UI toggle for case-insensitive
+   matching (§6.2).
+4. **Missing tier = hard error:** an analysis or query for tier `T` runs only if `T` exists
+   in every file of the corpus; the error names the offending file(s). A present tier without
+   the searched label simply yields count 0 (§6.2).
+5. **UI language:** English only.
+6. **Distance reference point** is one global choice per query (beginning/midpoint/end);
+   AND-groups can alternatively use Allen-style interval relations (§7.1).
+7. **Instance counting:** one instance per anchor annotation by default; a UI toggle switches
+   to every-satisfying-combination semantics (§7.1).
+8. **NOT** follows the near-the-anchor rule: an instance is rejected iff a matching negated
+   annotation lies within the max distance of the anchor annotation (§7.1, with examples).
+9. **Instance statistics:** per-file counts, Σ total, mean across the corpus and sample σ;
+   breakdown by matched label combination behind a checkbox, disabled by default (§7.4).
