@@ -50,7 +50,7 @@ def test_and_requires_partner_within_distance(tmp_path):
     assert len(evaluate(project, corpus, q2)) == 1
 
 
-# --- NOT semantics (near-the-anchor rule), from PLAN.md section 7.1 -----------
+# --- NOT semantics (near-any-member rule), from PLAN.md section 7.1 -----------
 
 
 def test_a_and_not_b(tmp_path):
@@ -69,10 +69,10 @@ def test_a_and_not_b(tmp_path):
     assert len(evaluate(project2, corpus2, q2)) == 1
 
 
-def test_a_and_b_and_not_c_examples(tmp_path):
+def test_a_and_b_and_not_c_near_any_member(tmp_path):
     expr = Group("AND", [Term("A", "a"), Term("B", "b"), Term("C", "c", negated=True)])
 
-    # Example 1: A=0, B=10, C=500 -> C within 1000 of anchor A -> rejected
+    # C 500 ms from A and 490 ms from B -> near a member -> rejected
     p1, c1 = _single_file(
         tmp_path,
         {"A": [("a", 0, 5)], "B": [("b", 10, 15)], "C": [("c", 500, 505)]},
@@ -80,21 +80,41 @@ def test_a_and_b_and_not_c_examples(tmp_path):
     )
     assert evaluate(p1, c1, _q(expr)) == []
 
-    # Example 2: A=0, B=1000, C=1100 -> B in range, C out of range -> selected
+    # C 100 ms from member B (1100 ms from A) -> near a member -> rejected
     p2, c2 = _single_file(
         tmp_path,
         {"A": [("a", 0, 5)], "B": [("b", 1000, 1005)], "C": [("c", 1100, 1105)]},
         name="ex2.eaf",
     )
-    assert len(evaluate(p2, c2, _q(expr))) == 1
+    assert evaluate(p2, c2, _q(expr)) == []
 
-    # Example 3: B=0, A=500, C=1100 -> C is 600 ms from anchor A -> rejected
+    # C 600 ms from member A (1100 ms from B) -> near a member -> rejected
     p3, c3 = _single_file(
         tmp_path,
         {"A": [("a", 500, 505)], "B": [("b", 0, 5)], "C": [("c", 1100, 1105)]},
         name="ex3.eaf",
     )
     assert evaluate(p3, c3, _q(expr)) == []
+
+    # C at least 1000 ms away from BOTH members -> instance kept
+    p4, c4 = _single_file(
+        tmp_path,
+        {"A": [("a", 0, 5)], "B": [("b", 900, 905)], "C": [("c", 2200, 2205)]},
+        name="ex4.eaf",
+    )
+    assert len(evaluate(p4, c4, _q(expr))) == 1
+
+
+def test_positive_tuple_is_pairwise(tmp_path):
+    # b is within 1000 ms of both a and c, but a and c are 1800 ms apart:
+    # a valid tuple requires ALL members pairwise within the max distance.
+    project, corpus = _single_file(
+        tmp_path,
+        {"T1": [("a", 0, 5)], "T2": [("b", 900, 905)], "T3": [("c", 1800, 1805)]},
+    )
+    expr = Group("AND", [Term("T1", "a"), Term("T2", "b"), Term("T3", "c")])
+    assert evaluate(project, corpus, _q(expr, distance=1000)) == []
+    assert len(evaluate(project, corpus, _q(expr, distance=1800))) == 1
 
 
 # --- distance boundary --------------------------------------------------------

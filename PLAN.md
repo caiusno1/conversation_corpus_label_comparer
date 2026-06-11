@@ -298,17 +298,20 @@ one and then handed over to the same descriptive statistics as in View 2.
   *contains/during*, *meets*, *starts together*, *ends together*. The max-distance constraint
   remains the default.
 - **Instance (compound) & counting semantics:** the first non-negated term is the *anchor*.
-  By default each annotation matching the anchor yields **at most one instance**: the
-  evaluator searches the anchor's `D`-neighborhood for the nearest annotations satisfying the
-  remaining expression. `point AND nod` therefore counts *point gestures that have a nod
-  nearby* — interpretable counts instead of a combinatorial pair explosion. A **UI toggle**
-  switches to *every satisfying combination* semantics (all valid tuples become instances).
-- **NOT semantics (near-the-anchor rule):** a negated term/group rejects an instance iff a
-  matching annotation lies within max distance `D` of the **anchor** annotation.
+  The positive annotations of an instance form a **tuple that is pairwise ≤ `D` apart**.
+  By default each annotation matching the anchor yields **at most one instance**: candidates
+  are tried nearest-to-the-anchor first (with backtracking when a NOT rejects a choice).
+  `point AND nod` therefore counts *point gestures that have a nod nearby* — interpretable
+  counts instead of a combinatorial pair explosion. A **UI toggle** switches to *every
+  satisfying combination* semantics (all valid tuples become instances).
+- **NOT semantics (near-any-member rule, revised):** a negated term/group rejects an
+  instance iff a matching annotation lies within max distance `D` of **at least one** of the
+  instance's positive annotations — "selected only if no C is close enough to A or B".
   Examples (`D` = 1000 ms):
   - `A AND NOT B`: B 10 ms from A → rejected; B 1005 ms from A → instance kept.
-  - `A AND B AND NOT C` (anchor A): C 600 ms from A → rejected, even when C is 1100 ms
-    away from B; C 100 ms from B but 1100 ms from A → instance kept.
+  - `A AND B AND NOT C` (tuple A, B): C 600 ms from A → rejected even though C is 1100 ms
+    from B; C 100 ms from B → rejected even though C is 1100 ms from A; C at least `D`
+    away from **both** A and B → instance kept.
   - If the positive part already fails (e.g. A and B more than `D` apart), no compound
     exists in the first place — NOT never needs to be evaluated.
 - Evaluation per file (annotations sorted by time, windowed join), concatenated over the
@@ -379,9 +382,10 @@ label per file plus the dictionary coverage restricted to the interval.
   JSON round-trip), and every metric in §6.2 against hand-computed values.
 - Query engine tests (§7.1): AND/OR/NOT, nesting, every reference-point mode
   (beginning/midpoint/end), distance boundary cases (distance exactly `D`; the 5 ms vs
-  1000 ms example from §7.1), the near-the-anchor NOT examples from §7.1, interval
-  relations, both counting modes (one-per-anchor / every combination), multi-file
-  concatenation — all against hand-computed instance lists.
+  1000 ms example from §7.1), the near-any-member NOT examples from §7.1, pairwise tuple
+  enforcement for three positive terms, interval relations, both counting modes
+  (one-per-anchor / every combination), multi-file concatenation — all against
+  hand-computed instance lists.
 - Error paths: a tier missing in one file of the corpus blocks analysis and query with the
   expected message naming the file; invalid `.eaf` files are rejected on import.
 - Interval tests (§8): containment boundary inclusivity, overlapping vs contained vs merely
@@ -425,7 +429,9 @@ All former open questions were decided with the project owner (2026-06-11):
    AND-groups can alternatively use Allen-style interval relations (§7.1).
 7. **Instance counting:** one instance per anchor annotation by default; a UI toggle switches
    to every-satisfying-combination semantics (§7.1).
-8. **NOT** follows the near-the-anchor rule: an instance is rejected iff a matching negated
-   annotation lies within the max distance of the anchor annotation (§7.1, with examples).
+8. **NOT** follows the near-any-member rule (revised after implementation review,
+   superseding the earlier near-the-anchor choice): an instance is rejected iff a matching
+   negated annotation lies within the max distance of **at least one** positive annotation
+   of the tuple (§7.1, with examples). The positive tuple itself is pairwise ≤ `D`.
 9. **Instance statistics:** per-file counts, Σ total, mean across the corpus and sample σ;
    breakdown by matched label combination behind a checkbox, disabled by default (§7.4).

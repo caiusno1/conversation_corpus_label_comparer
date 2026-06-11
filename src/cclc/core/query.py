@@ -11,10 +11,13 @@ Semantics (see PLAN.md sections 7.1 and 11):
 * **Anchor** - the first non-negated term (depth-first) is the anchor.  Each
   anchor annotation yields at most one instance in the default ``"anchor"``
   counting mode; ``"combinations"`` emits every satisfying tuple instead.
-* **Positive term** - satisfied when a matching annotation lies within the max
-  distance of the anchor (or satisfies the active interval relation).
-* **NOT (near-the-anchor rule)** - a negated term/group rejects the instance iff
-  a matching annotation lies within the max distance of the anchor annotation.
+* **Positive tuple** - all positive annotations of an instance must be
+  **pairwise** within the max distance (or satisfy the active interval relation
+  against the anchor).  Candidates are tried nearest-to-the-anchor first, with
+  backtracking when a later constraint rejects a choice.
+* **NOT (near-any-member rule)** - a negated term/group rejects the instance iff
+  a matching annotation lies within the max distance of **at least one** of the
+  instance's positive annotations.
 * **Interval relations** - an AND-group may instead require an Allen-style
   relation (overlaps / contains / during / meets / starts / finishes) between the
   anchor and the matched annotation.
@@ -167,13 +170,19 @@ def _relation_holds(relation: str, anchor: Annotation, other: Annotation) -> boo
     return False
 
 
-def _compatible(
-    anchor: Annotation, cand: Annotation, query: Query, relation: str | None
-) -> bool:
-    if relation is not None:
-        return _relation_holds(relation, anchor, cand)
-    dist = _distance(anchor, cand, query.reference_point)
+def _pair_ok(a: Annotation, b: Annotation, query: Query) -> bool:
+    dist = _distance(a, b, query.reference_point)
     return dist is not None and dist <= query.max_distance_ms
+
+
+def _near_any(
+    ann: Annotation, positives: list[Annotation], query: Query, relation: str | None
+) -> bool:
+    """Whether ``ann`` is "near" the tuple: within the max distance of at least
+    one positive annotation, or (in relation mode) related to the anchor."""
+    if relation is not None:
+        return bool(positives) and _relation_holds(relation, positives[0], ann)
+    return any(_pair_ok(ann, p, query) for p in positives)
 
 
 # --- evaluation ---------------------------------------------------------------
@@ -226,137 +235,139 @@ def _evaluate_file(doc: ElanDocument, path: Path, query: Query) -> list[Instance
 
     out: list[Instance] = []
     for anchor in anchors:
-        if query.counting_mode == "combinations":
-            out.extend(_combinations_for_anchor(query.root, anchor, anchor_term, doc, path, query))
-        else:
-            matched: dict[str, Annotation] = {}
-            ok = _satisfied(query.root, anchor, doc, query, None, matched)
-            if ok:
-                matched[anchor_term.key()] = anchor
-                out.append(_make_instance(path, matched, query))
+        seed = {anchor_term.key(): anchor}
+        for state, pending in _assignments(query.root, seed, (), doc, query, None):
+            positives = list(state.values())
+            if any(_blocks(node, rel, positives, doc, query) for node, rel in pending):
+                continue
+            out.append(_make_instance(path, state, query))
+            if query.counting_mode == "anchor":
+                break
     return _dedupe(out)
 
 
-def _satisfied(
+def _assignments(
     node: Node,
-    anchor: Annotation,
+    state: dict[str, Annotation],
+    pending: tuple,
     doc: ElanDocument,
     query: Query,
     relation: str | None,
-    matched: dict[str, Annotation],
-) -> bool:
-    """Evaluate ``node`` for one anchor; record matched positive annotations."""
+):
+    """Yield ``(state, pending)`` pairs satisfying the positive part of ``node``.
+
+    ``state`` maps term keys to the chosen annotations (the anchor is
+    pre-seeded); every new choice must be compatible with ALL annotations chosen
+    so far - pairwise max distance, or the active interval relation against the
+    anchor.  Negated nodes are deferred into ``pending`` (with their relation
+    context) and checked against the completed tuple afterwards, which also
+    gives backtracking: if the nearest candidate tuple is rejected by a NOT,
+    the next one is tried.
+    """
     if isinstance(node, Term):
-        candidates = _term_matches(node, anchor, doc, query, relation)
         if node.negated:
-            return not candidates
-        if not candidates:
-            return False
-        matched[node.key()] = candidates[0]
-        return True
+            yield state, (*pending, (node, relation))
+            return
+        if node.key() in state:
+            yield state, pending
+            return
+        for ann in _compatible_candidates(node, list(state.values()), doc, query, relation):
+            yield {**state, node.key(): ann}, pending
+        return
+
+    if node.negated:
+        yield state, (*pending, (node, relation))
+        return
 
     active = node.relation if node.relation is not None else relation
     if node.op == "AND":
-        local: dict[str, Annotation] = {}
+        states = [(state, pending)]
         for child in node.children:
-            if not _satisfied(child, anchor, doc, query, active, local):
-                ok = False
-                break
-        else:
-            ok = True
-        result = ok
-    else:  # OR
-        result = False
-        local = {}
+            states = [
+                extended
+                for current in states
+                for extended in _assignments(child, current[0], current[1], doc, query, active)
+            ]
+            if not states:
+                return
+        yield from states
+    else:  # OR: each child is a separate way to satisfy the group
         for child in node.children:
-            branch: dict[str, Annotation] = {}
-            if _satisfied(child, anchor, doc, query, active, branch):
-                local = branch
-                result = True
-                break
-
-    if node.negated:
-        return not result
-    if result:
-        matched.update(local)
-    return result
+            yield from _assignments(child, state, pending, doc, query, active)
 
 
-def _term_matches(
+def _label_annotations(term: Term, doc: ElanDocument) -> list[Annotation]:
+    """All annotations on ``term``'s tier whose value matches its label."""
+    tier = doc.tiers.get(term.tier)
+    if tier is None:
+        return []
+    return [
+        ann
+        for ann in tier.annotations
+        if ann.value and label_matches(ann.value, term.label, case_sensitive=True)
+    ]
+
+
+def _compatible_candidates(
     term: Term,
-    anchor: Annotation,
+    positives: list[Annotation],
     doc: ElanDocument,
     query: Query,
     relation: str | None,
 ) -> list[Annotation]:
-    """Annotations on ``term``'s tier matching its label and compatible w/ anchor.
+    """Annotations matching ``term`` that fit the tuple built so far.
 
-    Sorted by distance to the anchor so the nearest is first.
+    Distance mode: pairwise within the max distance of every chosen annotation.
+    Relation mode: the Allen relation must hold against the anchor (the first
+    chosen annotation).  Sorted nearest-to-the-anchor first so the default
+    anchor counting picks the closest satisfying tuple.
     """
-    tier = doc.tiers.get(term.tier)
-    if tier is None:
-        return []
-    matches: list[tuple[int, Annotation]] = []
-    for ann in tier.annotations:
-        if not ann.value or not label_matches(ann.value, term.label, case_sensitive=True):
+    anchor = positives[0] if positives else None
+    out: list[tuple[int, Annotation]] = []
+    for ann in _label_annotations(term, doc):
+        if relation is not None:
+            if anchor is None or not _relation_holds(relation, anchor, ann):
+                continue
+        elif not all(_pair_ok(ann, p, query) for p in positives):
             continue
-        if not _compatible(anchor, ann, query, relation):
-            continue
-        dist = _distance(anchor, ann, query.reference_point)
-        matches.append((dist if dist is not None else 1 << 30, ann))
-    matches.sort(key=lambda t: t[0])
-    return [ann for _, ann in matches]
+        dist = (
+            _distance(ann, anchor, query.reference_point) if anchor is not None else 0
+        )
+        out.append((dist if dist is not None else 1 << 30, ann))
+    out.sort(key=lambda t: t[0])
+    return [ann for _, ann in out]
 
 
-def _combinations_for_anchor(
+def _blocks(
     node: Node,
-    anchor: Annotation,
-    anchor_term: Term,
+    relation: str | None,
+    positives: list[Annotation],
     doc: ElanDocument,
-    path: Path,
     query: Query,
-) -> list[Instance]:
-    """Expand every satisfying tuple of positive matches for one anchor.
+) -> bool:
+    """Whether a deferred negated node finds a match near the finished tuple.
 
-    Supported for AND-dominant trees; OR groups contribute their union of
-    candidates.  NOT conditions are checked exactly as in anchor mode.
+    A negated **term** blocks iff one of its annotations lies within the max
+    distance of at least one positive annotation (near-any-member rule); in
+    relation mode the relation is tested against the anchor instead.  A negated
+    **group** blocks iff its children are satisfiable that way under the group's
+    operator; negations nested inside invert their child's result.
     """
-    # First confirm the expression is satisfiable at all (and that NOTs pass).
-    probe: dict[str, Annotation] = {}
-    if not _satisfied(node, anchor, doc, query, None, probe):
-        return []
-
-    # Collect candidate lists for each positive term reachable without negation.
-    positive_terms: list[Term] = []
-    _collect_positive_terms(node, negated_ctx=False, out=positive_terms)
-
-    candidate_lists: list[tuple[str, list[Annotation]]] = []
-    for term in positive_terms:
-        if term.key() == anchor_term.key():
-            candidate_lists.append((term.key(), [anchor]))
-            continue
-        cands = _term_matches(term, anchor, doc, query, None)
-        if not cands:
-            return []
-        candidate_lists.append((term.key(), cands))
-
-    # Cartesian product over the candidate lists.
-    combos: list[dict[str, Annotation]] = [{}]
-    for key, cands in candidate_lists:
-        combos = [dict(c, **{key: ann}) for c in combos for ann in cands]
-
-    return [_make_instance(path, combo, query) for combo in combos]
-
-
-def _collect_positive_terms(node: Node, negated_ctx: bool, out: list[Term]) -> None:
     if isinstance(node, Term):
-        if not (node.negated or negated_ctx):
-            if all(t.key() != node.key() for t in out):
-                out.append(node)
-        return
-    child_ctx = negated_ctx != node.negated
+        return any(
+            _near_any(ann, positives, query, relation)
+            for ann in _label_annotations(node, doc)
+        )
+    active = node.relation if node.relation is not None else relation
+    results = []
     for child in node.children:
-        _collect_positive_terms(child, child_ctx, out)
+        result = _blocks(child, active, positives, doc, query)
+        if child.negated:
+            result = not result
+        results.append(result)
+    if not results:
+        return False
+    return all(results) if node.op == "AND" else any(results)
 
 
 def _make_instance(path: Path, matched: dict[str, Annotation], query: Query) -> Instance:
