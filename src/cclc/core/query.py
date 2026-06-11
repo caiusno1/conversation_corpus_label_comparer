@@ -11,10 +11,13 @@ Semantics (see PLAN.md sections 7.1 and 11):
 * **Anchor** - the first non-negated term (depth-first) is the anchor.  Each
   anchor annotation yields at most one instance in the default ``"anchor"``
   counting mode; ``"combinations"`` emits every satisfying tuple instead.
-* **Positive tuple** - all positive annotations of an instance must be
-  **pairwise** within the max distance (or satisfy the active interval relation
-  against the anchor).  Candidates are tried nearest-to-the-anchor first, with
-  backtracking when a later constraint rejects a choice.
+* **Positive tuple (chain rule)** - the positive annotations of an instance
+  form a temporal chain: sorted by their reference points, each *consecutive*
+  pair is within the max distance.  ``A -900ms- B -900ms- C`` is therefore one
+  compound at ``D = 1000`` even though A and C are 1800 ms apart.  Members
+  matched under an interval relation are exempt from the chain (their relation
+  already binds them to the anchor).  Candidates are tried nearest-to-the-anchor
+  first, with backtracking when a later constraint rejects a choice.
 * **NOT (near-any-member rule)** - a negated term/group rejects the instance iff
   a matching annotation lies within the max distance of **at least one** of the
   instance's positive annotations.
@@ -233,10 +236,18 @@ def _evaluate_file(doc: ElanDocument, path: Path, query: Query) -> list[Instance
         if a.value and label_matches(a.value, anchor_term.label, case_sensitive=True)
     ]
 
+    n_positive = len(_positive_keys(query.root, False))
+    max_span = max(0, n_positive - 1) * query.max_distance_ms
+
     out: list[Instance] = []
     for anchor in anchors:
         seed = {anchor_term.key(): anchor}
-        for state, pending in _assignments(query.root, seed, (), doc, query, None):
+        for state, pending, rel_keys in _assignments(
+            query.root, seed, (), frozenset(), doc, query, None, max_span
+        ):
+            chain = [ann for key, ann in state.items() if key not in rel_keys]
+            if not _chain_ok(chain, query):
+                continue
             positives = list(state.values())
             if any(_blocks(node, rel, positives, doc, query) for node, rel in pending):
                 continue
@@ -246,54 +257,96 @@ def _evaluate_file(doc: ElanDocument, path: Path, query: Query) -> list[Instance
     return _dedupe(out)
 
 
+def _positive_keys(node: Node, negated_ctx: bool) -> set[str]:
+    """Distinct keys of the terms that act positively in ``node``."""
+    if isinstance(node, Term):
+        return set() if (node.negated or negated_ctx) else {node.key()}
+    child_ctx = negated_ctx != node.negated
+    keys: set[str] = set()
+    for child in node.children:
+        keys |= _positive_keys(child, child_ctx)
+    return keys
+
+
+def _chain_ok(members: list[Annotation], query: Query) -> bool:
+    """Whether the annotations form a temporal chain.
+
+    Sorted by their reference points, every consecutive pair must be within the
+    max distance.  ``A -900- B -900- C`` therefore passes at ``D = 1000`` even
+    though A and C are 1800 ms apart.  Untimed members fail the chain.
+    """
+    if len(members) <= 1:
+        return True
+    points: list[int] = []
+    for ann in members:
+        point = ann.reference_point(query.reference_point)
+        if point is None:
+            return False
+        points.append(point)
+    points.sort()
+    return all(
+        b - a <= query.max_distance_ms
+        for a, b in zip(points, points[1:], strict=False)
+    )
+
+
 def _assignments(
     node: Node,
     state: dict[str, Annotation],
     pending: tuple,
+    rel_keys: frozenset[str],
     doc: ElanDocument,
     query: Query,
     relation: str | None,
+    max_span: int,
 ):
-    """Yield ``(state, pending)`` pairs satisfying the positive part of ``node``.
+    """Yield ``(state, pending, rel_keys)`` triples for the positive part of ``node``.
 
     ``state`` maps term keys to the chosen annotations (the anchor is
-    pre-seeded); every new choice must be compatible with ALL annotations chosen
-    so far - pairwise max distance, or the active interval relation against the
-    anchor.  Negated nodes are deferred into ``pending`` (with their relation
-    context) and checked against the completed tuple afterwards, which also
-    gives backtracking: if the nearest candidate tuple is rejected by a NOT,
-    the next one is tried.
+    pre-seeded).  Candidates are pre-filtered to lie within ``max_span`` of the
+    anchor (``(n-1) * D`` - no chain member can be farther away); the actual
+    chain constraint is validated on the completed tuple by the caller, which
+    also gives backtracking: if the nearest candidate tuple is rejected, the
+    next one is tried.  ``rel_keys`` records members matched under an interval
+    relation - they are exempt from the chain check.  Negated nodes are deferred
+    into ``pending`` with their relation context.
     """
     if isinstance(node, Term):
         if node.negated:
-            yield state, (*pending, (node, relation))
+            yield state, (*pending, (node, relation)), rel_keys
             return
         if node.key() in state:
-            yield state, pending
+            yield state, pending, rel_keys
             return
-        for ann in _compatible_candidates(node, list(state.values()), doc, query, relation):
-            yield {**state, node.key(): ann}, pending
+        anchor = next(iter(state.values()))
+        new_rel = rel_keys | {node.key()} if relation is not None else rel_keys
+        for ann in _term_candidates(node, anchor, doc, query, relation, max_span):
+            yield {**state, node.key(): ann}, pending, new_rel
         return
 
     if node.negated:
-        yield state, (*pending, (node, relation))
+        yield state, (*pending, (node, relation)), rel_keys
         return
 
     active = node.relation if node.relation is not None else relation
     if node.op == "AND":
-        states = [(state, pending)]
+        states = [(state, pending, rel_keys)]
         for child in node.children:
             states = [
                 extended
                 for current in states
-                for extended in _assignments(child, current[0], current[1], doc, query, active)
+                for extended in _assignments(
+                    child, current[0], current[1], current[2], doc, query, active, max_span
+                )
             ]
             if not states:
                 return
         yield from states
     else:  # OR: each child is a separate way to satisfy the group
         for child in node.children:
-            yield from _assignments(child, state, pending, doc, query, active)
+            yield from _assignments(
+                child, state, pending, rel_keys, doc, query, active, max_span
+            )
 
 
 def _label_annotations(term: Term, doc: ElanDocument) -> list[Annotation]:
@@ -308,31 +361,29 @@ def _label_annotations(term: Term, doc: ElanDocument) -> list[Annotation]:
     ]
 
 
-def _compatible_candidates(
+def _term_candidates(
     term: Term,
-    positives: list[Annotation],
+    anchor: Annotation,
     doc: ElanDocument,
     query: Query,
     relation: str | None,
+    max_span: int,
 ) -> list[Annotation]:
-    """Annotations matching ``term`` that fit the tuple built so far.
+    """Annotations matching ``term`` that could belong to the anchor's tuple.
 
-    Distance mode: pairwise within the max distance of every chosen annotation.
-    Relation mode: the Allen relation must hold against the anchor (the first
-    chosen annotation).  Sorted nearest-to-the-anchor first so the default
-    anchor counting picks the closest satisfying tuple.
+    Relation mode: the Allen relation must hold against the anchor.  Distance
+    mode: within ``max_span`` of the anchor (a coarse pre-filter; the chain
+    constraint is checked on the completed tuple).  Sorted nearest-to-the-anchor
+    first so the default anchor counting picks the closest satisfying tuple.
     """
-    anchor = positives[0] if positives else None
     out: list[tuple[int, Annotation]] = []
     for ann in _label_annotations(term, doc):
+        dist = _distance(ann, anchor, query.reference_point)
         if relation is not None:
-            if anchor is None or not _relation_holds(relation, anchor, ann):
+            if not _relation_holds(relation, anchor, ann):
                 continue
-        elif not all(_pair_ok(ann, p, query) for p in positives):
+        elif dist is None or dist > max_span:
             continue
-        dist = (
-            _distance(ann, anchor, query.reference_point) if anchor is not None else 0
-        )
         out.append((dist if dist is not None else 1 << 30, ann))
     out.sort(key=lambda t: t[0])
     return [ann for _, ann in out]

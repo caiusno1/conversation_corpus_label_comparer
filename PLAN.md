@@ -287,18 +287,21 @@ one and then handed over to the same descriptive statistics as in View 2.
 - **Max distance `D` (ms) + reference point:** set per query (optional override per
   AND-group). The reference point is selectable as **beginning**, **midpoint** or **end** of
   an annotation; the distance between two annotations (on different tiers) is the absolute
-  difference of their reference points — e.g. for "beginning": `|start_B − start_A|`. All
-  annotations forming one instance must be **pairwise** ≤ `D` apart ("maximally away from
-  each other").
+  difference of their reference points — e.g. for "beginning": `|start_B − start_A|`. The
+  annotations forming one instance must build a temporal **chain**: ordered by their
+  reference points, every *consecutive* pair is ≤ `D` apart.
   *Example (reference = beginning):* annotation A on tier *a* starts at 5 ms, annotation B on
   tier *b* at 1000 ms → distance 995 ms. With `D` = 500 ms the pair is **not** a compound;
   with `D` = 1000 ms it is found as a match/compound.
+  *Chain example:* `A —900ms— B —900ms— C` **is** one compound at `D` = 1000 ms — both
+  consecutive gaps are within `D` — even though A and C are 1800 ms apart.
 - **Interval relations (alternative constraint):** instead of a max distance, an AND-group
   can require an Allen-style relation between the matched annotations — *overlaps*,
   *contains/during*, *meets*, *starts together*, *ends together*. The max-distance constraint
   remains the default.
 - **Instance (compound) & counting semantics:** the first non-negated term is the *anchor*.
-  The positive annotations of an instance form a **tuple that is pairwise ≤ `D` apart**.
+  The positive annotations of an instance form a **chain** (consecutive members ≤ `D`, see
+  above); members matched via an interval relation are bound by their relation instead.
   By default each annotation matching the anchor yields **at most one instance**: candidates
   are tried nearest-to-the-anchor first (with backtracking when a NOT rejects a choice).
   `point AND nod` therefore counts *point gestures that have a nod nearby* — interpretable
@@ -382,10 +385,10 @@ label per file plus the dictionary coverage restricted to the interval.
   JSON round-trip), and every metric in §6.2 against hand-computed values.
 - Query engine tests (§7.1): AND/OR/NOT, nesting, every reference-point mode
   (beginning/midpoint/end), distance boundary cases (distance exactly `D`; the 5 ms vs
-  1000 ms example from §7.1), the near-any-member NOT examples from §7.1, pairwise tuple
-  enforcement for three positive terms, interval relations, both counting modes
-  (one-per-anchor / every combination), multi-file concatenation — all against
-  hand-computed instance lists.
+  1000 ms example from §7.1), the near-any-member NOT examples from §7.1, the chain rule
+  for three positive terms (gaps 900/900 selected, 900/1100 rejected at `D` = 1000),
+  interval relations, both counting modes (one-per-anchor / every combination), multi-file
+  concatenation — all against hand-computed instance lists.
 - Error paths: a tier missing in one file of the corpus blocks analysis and query with the
   expected message naming the file; invalid `.eaf` files are rejected on import.
 - Interval tests (§8): containment boundary inclusivity, overlapping vs contained vs merely
@@ -432,6 +435,8 @@ All former open questions were decided with the project owner (2026-06-11):
 8. **NOT** follows the near-any-member rule (revised after implementation review,
    superseding the earlier near-the-anchor choice): an instance is rejected iff a matching
    negated annotation lies within the max distance of **at least one** positive annotation
-   of the tuple (§7.1, with examples). The positive tuple itself is pairwise ≤ `D`.
+   of the tuple (§7.1, with examples). The positive tuple itself forms a **chain** —
+   consecutive members ≤ `D` apart; `A —900— B —900— C` is selected at `D` = 1000 although
+   A and C are 1800 ms apart (also revised, superseding pairwise).
 9. **Instance statistics:** per-file counts, Σ total, mean across the corpus and sample σ;
    breakdown by matched label combination behind a checkbox, disabled by default (§7.4).

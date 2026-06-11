@@ -105,14 +105,34 @@ def test_a_and_b_and_not_c_near_any_member(tmp_path):
     assert len(evaluate(p4, c4, _q(expr))) == 1
 
 
-def test_positive_tuple_is_pairwise(tmp_path):
-    # b is within 1000 ms of both a and c, but a and c are 1800 ms apart:
-    # a valid tuple requires ALL members pairwise within the max distance.
+def test_positive_tuple_forms_a_chain(tmp_path):
+    # A -900ms- B -900ms- C: every consecutive gap is within D=1000, so the
+    # tuple is selected even though a and c are 1800 ms apart (chain rule).
     project, corpus = _single_file(
         tmp_path,
         {"T1": [("a", 0, 5)], "T2": [("b", 900, 905)], "T3": [("c", 1800, 1805)]},
     )
     expr = Group("AND", [Term("T1", "a"), Term("T2", "b"), Term("T3", "c")])
+    assert len(evaluate(project, corpus, _q(expr, distance=1000))) == 1
+
+
+def test_chain_with_too_large_gap_rejects(tmp_path):
+    # gap b -> c is 1100 ms > D: the chain is broken, no instance
+    project, corpus = _single_file(
+        tmp_path,
+        {"T1": [("a", 0, 5)], "T2": [("b", 900, 905)], "T3": [("c", 2000, 2005)]},
+    )
+    expr = Group("AND", [Term("T1", "a"), Term("T2", "b"), Term("T3", "c")])
+    assert evaluate(project, corpus, _q(expr, distance=1000)) == []
+    assert len(evaluate(project, corpus, _q(expr, distance=1100))) == 1
+
+
+def test_two_member_chain_equals_direct_distance(tmp_path):
+    # with only two positive terms the chain rule is the plain distance check
+    project, corpus = _single_file(
+        tmp_path, {"T1": [("a", 0, 5)], "T2": [("b", 1800, 1805)]}
+    )
+    expr = Group("AND", [Term("T1", "a"), Term("T2", "b")])
     assert evaluate(project, corpus, _q(expr, distance=1000)) == []
     assert len(evaluate(project, corpus, _q(expr, distance=1800))) == 1
 
