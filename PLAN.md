@@ -243,7 +243,7 @@ one and then handed over to the same descriptive statistics as in View 2.
 
 ```
 ┌─ Corpora ─┬─ Analysis ─┬─ Query ─────────────────────────────────────┐
-│ Corpus: [Corpus A ▾]                     Max distance: [2000] ms     │
+│ Corpus: [Corpus A ▾]  Max distance: [2000] ms  measured at [begin ▾] │
 │ ── Query builder ──────────────────────────────────────────────────  │
 │ │ ALL of                                        [+ term] [+ group] │ │
 │ │ ├─ Gesture_L = “point”                                     NOT ☐ │ │
@@ -251,7 +251,7 @@ one and then handed over to the same descriptive statistics as in View 2.
 │ │ │   ├─ Head = “nod”                                              │ │
 │ │ │   └─ Head = “shake”                                            │ │
 │ │ └─ Speech = “overlap”                                      NOT ☑ │ │
-│ │  ≙  point AND (nod OR shake) AND NOT overlap, within 2000 ms     │ │
+│ │  ≙  point AND (nod OR shake) AND NOT overlap, ≤2000ms @begin     │ │
 │ [Run query]                                 87 instances in 9 files  │
 │ ── Instances ───────────────────────  [◀ Prev]  12 / 87  [Next ▶] ─  │
 │ │ session03.eaf    00:04:12.3 – 00:04:13.1             selected ☑ │ │
@@ -272,10 +272,15 @@ one and then handed over to the same descriptive statistics as in View 2.
 - **Operators:** AND-groups ("ALL of") and OR-groups ("ANY of") with arbitrary nesting;
   **NOT** is a toggle on any term or group. A query must contain at least one non-negated
   term.
-- **Max distance `D` (ms):** set per query (optional override per AND-group). The distance
-  between two annotations is the **gap between their time intervals** — overlapping or
-  touching annotations have distance 0. All annotations forming one instance must be
-  **pairwise** ≤ `D` apart ("maximally away from each other").
+- **Max distance `D` (ms) + reference point:** set per query (optional override per
+  AND-group). The reference point is selectable as **beginning**, **midpoint** or **end** of
+  an annotation; the distance between two annotations (on different tiers) is the absolute
+  difference of their reference points — e.g. for "beginning": `|start_B − start_A|`. All
+  annotations forming one instance must be **pairwise** ≤ `D` apart ("maximally away from
+  each other").
+  *Example (reference = beginning):* annotation A on tier *a* starts at 5 ms, annotation B on
+  tier *b* at 1000 ms → distance 995 ms. With `D` = 500 ms the pair is **not** a compound;
+  with `D` = 1000 ms it is found as a match/compound.
 - **Instance (compound) & counting semantics:** the first non-negated term is the *anchor*.
   Each annotation matching the anchor yields **at most one instance**: the evaluator searches
   the anchor's `D`-neighborhood for the nearest annotations satisfying the remaining
@@ -293,7 +298,7 @@ one and then handed over to the same descriptive statistics as in View 2.
   (tier combo + label combo + NOT checkbox); buttons *add term*, *add group*, *delete*;
   drag to re-order or re-nest.
 - The equivalent readable expression is displayed live underneath
-  (`point AND (nod OR shake) AND NOT overlap, within 2000 ms`).
+  (`point AND (nod OR shake) AND NOT overlap, within 2000 ms measured at beginning`).
 - Validation with inline messages (only-NOT query, empty group, tier missing in corpus).
 - **Saved queries:** name + expression stored in the project JSON (should-have).
 
@@ -329,8 +334,9 @@ one and then handed over to the same descriptive statistics as in View 2.
   the distance/co-occurrence cases.
 - Unit tests for parsing (tiers/CV extraction), corpus operations (move/duplicate rules,
   JSON round-trip), and every metric in §6.2 against hand-computed values.
-- Query engine tests (§7.1): AND/OR/NOT, nesting, distance boundary (gap exactly `D`),
-  overlap = 0 ms, NOT exclusion within the window, anchored counting, multi-file
+- Query engine tests (§7.1): AND/OR/NOT, nesting, every reference-point mode
+  (beginning/midpoint/end), distance boundary cases (distance exactly `D`; the 5 ms vs
+  1000 ms example from §7.1), NOT exclusion within the window, anchored counting, multi-file
   concatenation — all against hand-computed instance lists.
 - UI smoke test (optional, `pytest-qt`): build main window, simulate a drop, switch views.
 
@@ -361,8 +367,9 @@ Milestones 2–3 and 7 are pure-Python and reviewable independently of any UI wo
 4. Files missing a tier: keep "count as 0" (current default, n = all files) or exclude them
    from mean/σ?
 5. UI language English only, or German as well?
-6. Query distance: gap between the annotation intervals (current default) or
-   onset-to-onset distance?
+6. The distance reference point (beginning/midpoint/end) is one global choice per query
+   (current default) — should it additionally be selectable per term (e.g. *end* of A to
+   *beginning* of B), or extended by interval relations such as "overlaps"?
 7. Instance counting: one instance per anchor annotation (current default) or every
    satisfying combination of annotations?
 8. Should NOT exclude matches only within the distance window `D` (current default), or
