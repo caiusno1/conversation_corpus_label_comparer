@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .analysis import _norm, require_tier_everywhere, union_dictionary
-from .query import Query, evaluate
+from .query import Query, evaluate, free_term_keys
 
 if TYPE_CHECKING:
     from .corpus import Corpus, CorpusProject
@@ -211,22 +211,44 @@ def compound_transition_matrix(
     one sequence (ties ordered by end time, then name) and cell (i, j) counts
     how often an instance of compound *i* immediately follows an instance of
     compound *j*, divided by all instances of *i*.
+
+    A compound containing **free (ALL) terms** is expanded by its bindings:
+    every instance becomes an element named ``name[label, ...]`` with the labels
+    the free terms matched, so the matrix differentiates the bound values.
     """
     if not queries:
         raise ValueError("define at least one compound")
-    names = list(queries)
-    result = TransitionResult(row_labels=names, col_labels=names)
-    for name in names:
-        result.label_totals[name] = 0
 
+    elements: dict[str, None] = {}  # ordered set of matrix elements
     events_per_file: dict[Path, list[tuple[int, int, str]]] = {}
     for name, query in queries.items():
+        free_keys = free_term_keys(query.root)
+        seen_elements: set[str] = set()
         for instance in evaluate(project, corpus, query):
             if scope_file is not None and instance.file != scope_file:
                 continue
+            element = name
+            if free_keys:
+                bound = [
+                    instance.matched[key].value
+                    for key in free_keys
+                    if key in instance.matched
+                ]
+                element = f"{name}[{', '.join(bound)}]"
+            seen_elements.add(element)
             events_per_file.setdefault(instance.file, []).append(
-                (instance.start_ms, instance.end_ms, name)
+                (instance.start_ms, instance.end_ms, element)
             )
+        if free_keys:
+            for element in sorted(seen_elements):
+                elements[element] = None
+        else:
+            elements[name] = None  # plain compounds always appear, even with n=0
+
+    names = list(elements)
+    result = TransitionResult(row_labels=names, col_labels=names)
+    for name in names:
+        result.label_totals[name] = 0
 
     for events in events_per_file.values():
         events.sort(key=lambda item: (item[0], item[1], item[2]))

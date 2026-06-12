@@ -351,3 +351,48 @@ def test_compound_transitions_scope_and_validation(tmp_path):
     assert only_f2.transition_total == 0
     with pytest.raises(ValueError):
         compound_transition_matrix(project, corpus, {})
+
+
+def test_compound_transitions_with_free_variable_expansion(tmp_path):
+    # compound A = ALL G: every annotation on G becomes an element A[label]
+    project, corpus = _project_with(
+        tmp_path,
+        {
+            "f.eaf": dict(
+                tiers={"G": [("a", 0, 10), ("b", 1000, 1010), ("a", 2000, 2010)]}
+            )
+        },
+    )
+    queries = {"A": Query(Group("AND", [Term("G", "", free=True)]), max_distance_ms=1000)}
+    res = compound_transition_matrix(project, corpus, queries)
+    assert res.row_labels == ["A[a]", "A[b]"]
+    assert res.label_totals == {"A[a]": 2, "A[b]": 1}
+    assert res.count("A[b]", "A[a]") == 1
+    assert res.count("A[a]", "A[b]") == 1
+    assert res.ratio("A[a]", "A[b]") == pytest.approx(0.5)
+
+
+def test_compound_transitions_free_variable_with_fixed_terms(tmp_path):
+    # A = (T1=p AND ALL T2) -> elements A[x] / A[y]; B = T3=b stays plain
+    project, corpus = _project_with(
+        tmp_path,
+        {
+            "f.eaf": dict(
+                tiers={
+                    "T1": [("p", 0, 10), ("p", 3000, 3010)],
+                    "T2": [("x", 100, 110), ("y", 3100, 3110)],
+                    "T3": [("b", 1500, 1510)],
+                }
+            )
+        },
+    )
+    compound_a = Query(
+        Group("AND", [Term("T1", "p"), Term("T2", "", free=True)]), max_distance_ms=500
+    )
+    queries = {"A": compound_a, "B": Query(Group("AND", [Term("T3", "b")]), 500)}
+    res = compound_transition_matrix(project, corpus, queries)
+    # sequence: A[x]@0, B@1500, A[y]@3000
+    assert res.row_labels == ["A[x]", "A[y]", "B"]
+    assert res.count("B", "A[x]") == 1
+    assert res.count("A[y]", "B") == 1
+    assert res.ratio("A[y]", "B") == pytest.approx(1.0)

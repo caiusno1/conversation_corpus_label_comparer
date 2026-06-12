@@ -21,6 +21,10 @@ Semantics (see PLAN.md sections 7.1 and 12):
 * **NOT (near-any-member rule)** - a negated term/group rejects the instance iff
   a matching annotation lies within the max distance of **at least one** of the
   instance's positive annotations.
+* **ALL (free variable)** - ``Term(tier, "", free=True)`` matches any non-empty
+  label on the tier within the range of the rest of the compound and records the
+  bound label in the instance (``A=... AND B=... AND ALL C``).  ``NOT ALL C``
+  consequently rejects when *any* annotation on tier C is near the compound.
 * **Interval relations** - an AND-group may instead require an Allen-style
   relation (overlaps / contains / during / meets / starts / finishes) between the
   anchor and the matched annotation.
@@ -46,14 +50,21 @@ RELATIONS = ("overlaps", "contains", "during", "meets", "starts", "finishes")
 
 @dataclass
 class Term:
-    """A single ``tier = label`` condition, optionally negated."""
+    """A single ``tier = label`` condition, optionally negated.
+
+    With ``free=True`` the term is the **ALL operator** ("free variable"): it
+    matches *any* non-empty label on ``tier`` that lies within the temporal
+    range of the rest of the compound; the matched label is recorded in the
+    instance.  ``label`` is ignored for free terms.
+    """
 
     tier: str
     label: str
     negated: bool = False
+    free: bool = False
 
     def key(self) -> str:
-        return f"{self.tier}={self.label}"
+        return f"ALL {self.tier}" if self.free else f"{self.tier}={self.label}"
 
 
 @dataclass
@@ -113,7 +124,29 @@ class Instance:
     end_ms: int
 
     def label_combination(self) -> tuple[str, ...]:
-        return tuple(sorted(self.matched.keys()))
+        """Sorted term keys; free (ALL) terms show their bound label."""
+        parts = []
+        for key in sorted(self.matched):
+            if key.startswith("ALL "):
+                parts.append(f"{key[4:]}={self.matched[key].value}")
+            else:
+                parts.append(key)
+        return tuple(parts)
+
+
+def free_term_keys(node: Node, negated_ctx: bool = False) -> list[str]:
+    """Keys of the non-negated free (ALL) terms in depth-first order."""
+    if isinstance(node, Term):
+        if node.free and not (node.negated or negated_ctx):
+            return [node.key()]
+        return []
+    child_ctx = negated_ctx != node.negated
+    keys: list[str] = []
+    for child in node.children:
+        for key in free_term_keys(child, child_ctx):
+            if key not in keys:
+                keys.append(key)
+    return keys
 
 
 # --- AST helpers --------------------------------------------------------------
@@ -226,15 +259,7 @@ def _evaluate_file(doc: ElanDocument, path: Path, query: Query) -> list[Instance
     anchor_term = _first_positive_term(query.root)
     if anchor_term is None:
         return []
-    anchor_tier = doc.tiers.get(anchor_term.tier)
-    if anchor_tier is None:
-        return []
-
-    anchors = [
-        a
-        for a in anchor_tier.annotations
-        if a.value and label_matches(a.value, anchor_term.label, case_sensitive=True)
-    ]
+    anchors = _label_annotations(anchor_term, doc)
 
     n_positive = len(_positive_keys(query.root, False))
     max_span = max(0, n_positive - 1) * query.max_distance_ms
@@ -350,10 +375,15 @@ def _assignments(
 
 
 def _label_annotations(term: Term, doc: ElanDocument) -> list[Annotation]:
-    """All annotations on ``term``'s tier whose value matches its label."""
+    """All annotations on ``term``'s tier whose value matches its label.
+
+    A free (ALL) term matches every annotation with a non-empty value.
+    """
     tier = doc.tiers.get(term.tier)
     if tier is None:
         return []
+    if term.free:
+        return [ann for ann in tier.annotations if ann.value]
     return [
         ann
         for ann in tier.annotations

@@ -28,10 +28,13 @@ Five views (tabs):
    (several tiers combined via the union of their dictionaries), *tier → tier*
    (from each source-tier annotation to the next annotation on a target tier),
    and *compound → compound* (two compounds defined with the AND/OR/NOT query
-   builder). Raw-count toggle and CSV export.
+   builder; an `ALL <tier>` free-variable term matches any label in range and
+   expands the matrix by the bound labels, e.g. `A[nod]`, `A[shake]`).
+   Raw-count toggle and CSV export.
 5. **Query** — build boolean queries (AND / OR / NOT, nestable) over annotation
    labels with a maximum temporal distance (measured at the beginning, midpoint,
-   or end of annotations) or an Allen-style interval relation. Step through the
+   or end of annotations) or an Allen-style interval relation; `ALL <tier>`
+   terms act as free variables matching any label in range. Step through the
    matched instances one by one in a tier timeline, choose which tiers are
    visible, then feed the selected instances into per-file / corpus statistics
    (with an optional breakdown by label combination). CSV export.

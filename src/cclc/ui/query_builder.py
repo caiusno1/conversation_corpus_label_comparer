@@ -33,7 +33,7 @@ NODE_ROLE = Qt.UserRole + 1
 
 
 class TermDialog(QDialog):
-    """Edit a single term: tier, label and NOT flag."""
+    """Edit a single term: tier, label, NOT flag and the ALL (free) flag."""
 
     def __init__(self, parent, tiers: list[str], label_provider, term: Term | None):
         super().__init__(parent)
@@ -44,16 +44,20 @@ class TermDialog(QDialog):
         self.tier.addItems(tiers)
         self.label = QComboBox()
         self.label.setEditable(True)
+        self.free = QCheckBox("ALL — match any label (free variable)")
+        self.free.toggled.connect(lambda checked: self.label.setEnabled(not checked))
         self.negated = QCheckBox("NOT")
         if term is not None:
             self.tier.setCurrentText(term.tier)
             self.negated.setChecked(term.negated)
+            self.free.setChecked(term.free)
         self.tier.currentTextChanged.connect(self._refresh_labels)
         self._refresh_labels()
         if term is not None:
             self.label.setCurrentText(term.label)
         form.addRow("Tier:", self.tier)
         form.addRow("Label:", self.label)
+        form.addRow("", self.free)
         form.addRow("", self.negated)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -68,7 +72,13 @@ class TermDialog(QDialog):
             self.label.setCurrentText(current)
 
     def term(self) -> Term:
-        return Term(self.tier.currentText(), self.label.currentText(), self.negated.isChecked())
+        free = self.free.isChecked()
+        return Term(
+            self.tier.currentText(),
+            "" if free else self.label.currentText(),
+            self.negated.isChecked(),
+            free=free,
+        )
 
 
 class QueryBuilderWidget(QWidget):
@@ -217,7 +227,10 @@ class QueryBuilderWidget(QWidget):
         if data["kind"] == "term":
             term: Term = data["term"]
             prefix = "NOT " if term.negated else ""
-            item.setText(0, f"{prefix}{term.tier} = “{term.label}”")
+            if term.free:
+                item.setText(0, f"{prefix}ALL {term.tier}")
+            else:
+                item.setText(0, f"{prefix}{term.tier} = “{term.label}”")
         else:
             label = "ALL of" if data["op"] == "AND" else "ANY of"
             if data["negated"]:
@@ -270,7 +283,8 @@ class QueryBuilderWidget(QWidget):
         data = item.data(0, NODE_ROLE)
         if data["kind"] == "term":
             term: Term = data["term"]
-            return f"{'NOT ' if term.negated else ''}{term.label}"
+            body = f"ALL {term.tier}" if term.free else term.label
+            return f"{'NOT ' if term.negated else ''}{body}"
         joiner = " AND " if data["op"] == "AND" else " OR "
         parts = [self._render_node(item.child(i)) for i in range(item.childCount())]
         inner = joiner.join(parts) if parts else "∅"

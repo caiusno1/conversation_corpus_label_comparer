@@ -213,3 +213,25 @@ def test_transitions_view_tier_to_tier_and_compound_modes(app, tmp_path):
     # sequence: A(j1@0), B(i1@500) -> B after A = 1/1
     assert view.table.item(1, 0).text() == "1.000"
     assert "2 instances, 1 transitions" in view.summary.text()
+
+
+def test_transitions_compound_mode_with_free_variable(app, tmp_path):
+    window = MainWindow()
+    controller = window.controller
+    f = write_eaf(
+        tmp_path / "f.eaf",
+        tiers={"G": [("a", 0, 10), ("b", 1000, 1010), ("a", 2000, 2010)]},
+    )
+    controller.add_corpus("C")
+    controller.add_files("C", [f])
+
+    tabs = window.centralWidget()
+    view = tabs.widget(3)
+    view.mode_combo.setCurrentIndex(2)
+    view.builder_a.add_term(Term("G", "", free=True))  # compound A = ALL G
+    view.builder_b.add_term(Term("G", "a"))  # compound B = G="a"
+    view.distance.setValue(1000)
+    view._run_compounds()
+    rows = [view.table.verticalHeaderItem(r).text() for r in range(view.table.rowCount())]
+    # A expands by its free-variable bindings; B stays plain
+    assert rows == ["A[a]  (n=2)", "A[b]  (n=1)", "B  (n=2)"]

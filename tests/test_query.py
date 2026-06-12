@@ -279,3 +279,70 @@ def test_statistics_combination_breakdown(tmp_path):
     instances = evaluate(project, corpus, _q(expr))
     stats = instance_statistics(corpus, instances, breakdown=True)
     assert stats.combinations == {("A=point", "Head=nod"): 1}
+
+
+# --- ALL operator (free variables) ----------------------------------------------
+
+
+def test_all_term_binds_any_label_in_range(tmp_path):
+    # A=point AND ALL C: x@100 is in range, z@5000 is not
+    project, corpus = _single_file(
+        tmp_path,
+        {"A": [("point", 0, 10)], "C": [("x", 100, 110), ("z", 5000, 5010)]},
+    )
+    expr = Group("AND", [Term("A", "point"), Term("C", "", free=True)])
+    instances = evaluate(project, corpus, _q(expr, distance=1000))
+    assert len(instances) == 1
+    assert instances[0].matched["ALL C"].value == "x"
+    # the binding is visible in the label combination
+    assert instances[0].label_combination() == ("A=point", "C=x")
+
+
+def test_all_term_is_required(tmp_path):
+    # no annotation on C within range -> no compound
+    project, corpus = _single_file(
+        tmp_path, {"A": [("point", 0, 10)], "C": [("x", 5000, 5010)]}
+    )
+    expr = Group("AND", [Term("A", "point"), Term("C", "", free=True)])
+    assert evaluate(project, corpus, _q(expr, distance=1000)) == []
+
+
+def test_all_term_combinations_enumerate_bindings(tmp_path):
+    project, corpus = _single_file(
+        tmp_path,
+        {"A": [("point", 0, 10)], "C": [("x", 100, 110), ("y", 800, 810)]},
+    )
+    expr = Group("AND", [Term("A", "point"), Term("C", "", free=True)])
+    anchor = evaluate(project, corpus, _q(expr, distance=1000, mode="anchor"))
+    assert len(anchor) == 1  # nearest binding only
+    combos = evaluate(project, corpus, _q(expr, distance=1000, mode="combinations"))
+    assert {i.matched["ALL C"].value for i in combos} == {"x", "y"}
+
+
+def test_not_all_rejects_any_nearby_annotation(tmp_path):
+    # NOT ALL C: any annotation on C near the compound rejects
+    project, corpus = _single_file(
+        tmp_path,
+        {"A": [("point", 0, 10)], "C": [("whatever", 200, 210)]},
+        name="near.eaf",
+    )
+    expr = Group("AND", [Term("A", "point"), Term("C", "", negated=True, free=True)])
+    assert evaluate(project, corpus, _q(expr, distance=1000)) == []
+
+    project2, corpus2 = _single_file(
+        tmp_path,
+        {"A": [("point", 0, 10)], "C": [("whatever", 5000, 5010)]},
+        name="far.eaf",
+    )
+    expr2 = Group("AND", [Term("A", "point"), Term("C", "", negated=True, free=True)])
+    assert len(evaluate(project2, corpus2, _q(expr2, distance=1000))) == 1
+
+
+def test_all_term_as_anchor(tmp_path):
+    # a query of just "ALL G" yields one instance per annotation on G
+    project, corpus = _single_file(
+        tmp_path, {"G": [("a", 0, 10), ("b", 100, 110), ("a", 200, 210)]}
+    )
+    expr = Group("AND", [Term("G", "", free=True)])
+    instances = evaluate(project, corpus, _q(expr, distance=1000))
+    assert [i.matched["ALL G"].value for i in instances] == ["a", "b", "a"]

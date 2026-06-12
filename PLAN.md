@@ -287,6 +287,12 @@ one and then handed over to the same descriptive statistics as in View 2.
 - **Term** = *tier + label*, e.g. `Gesture_L = "point"`. Labels are offered from the tier's
   dictionary (same logic as View 2); for non-dictionary tiers a free-text equals match is
   allowed.
+- **ALL operator (free variable):** `ALL <tier>` is a term without a fixed label — it matches
+  *any* non-empty label on the tier that lies within the temporal range of the rest of the
+  compound, and records the bound label in the instance. Example:
+  `A="…" AND B="…" AND ALL C`. `NOT ALL C` consequently means "no annotation at all on
+  tier C near the compound". In the term dialog the operator is a checkbox that disables the
+  label field.
 - **Operators:** AND-groups ("ALL of") and OR-groups ("ANY of") with arbitrary nesting;
   **NOT** is a toggle on any term or group. A query must contain at least one non-negated
   term.
@@ -403,6 +409,10 @@ Three **modes** (combo box):
    instances, anchored at their start times, form the sequence and the matrix is computed
    over {A, B} ("transition probabilities from one compound to a different compound").
    Computed on demand via a *Run compounds* button.
+   **Free variables:** a compound containing `ALL <tier>` terms (§7.1) is expanded by its
+   bindings — every instance becomes a matrix element named `A[label]` with the label(s) the
+   free term matched, so e.g. `A = point AND ALL Head` yields separate rows/columns per
+   co-occurring head label.
 
 Common to all modes:
 
