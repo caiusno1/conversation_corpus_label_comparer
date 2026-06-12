@@ -4,7 +4,7 @@ All functions operate on a :class:`~cclc.core.corpus.CorpusProject` and a
 :class:`~cclc.core.corpus.Corpus`.  They contain no UI code and are covered by
 unit tests against hand-computed values.
 
-Policy decisions (see PLAN.md section 11):
+Policy decisions (see PLAN.md section 12):
 
 * A tier that is missing in *any* file of the corpus is a hard error
   (:class:`MissingTierError`); analysis runs only when every file has the tier.

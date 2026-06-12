@@ -8,7 +8,7 @@ See [PLAN.md](PLAN.md) for the full design and the resolved design decisions.
 
 ## Features
 
-Four views (tabs):
+Five views (tabs):
 
 1. **Corpora** — pick `.eaf` files from a filesystem tree and organise them into
    named corpora by drag & drop (from the panel, from the OS file manager, and
@@ -22,7 +22,12 @@ Four views (tabs):
    sliders *and* exact millisecond fields, kept in sync) and see, per file, the
    count of every dictionary label annotated within that window, plus the
    dictionary coverage restricted to the interval. CSV export.
-4. **Query** — build boolean queries (AND / OR / NOT, nestable) over annotation
+4. **Transitions** — label-to-label transition matrices per file or for the
+   whole corpus: cell (i, j) shows how often label i appeared immediately after
+   label j, divided by all instances of label i. Several tiers can be combined
+   (union of their dictionaries, merged time-ordered sequence) for cross-tier
+   transitions. Raw-count toggle and CSV export.
+5. **Query** — build boolean queries (AND / OR / NOT, nestable) over annotation
    labels with a maximum temporal distance (measured at the beginning, midpoint,
    or end of annotations) or an Allen-style interval relation. Step through the
    matched instances one by one in a tier timeline, choose which tiers are

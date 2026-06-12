@@ -23,6 +23,10 @@ coverage across those corpora.
    annotations lie within a fixed time interval (bounds slidable *and* directly enterable as
    numbers) and list the counts per file and label, plus the dictionary coverage restricted
    to that interval.
+5. **Transitions View** — compute transition matrices over the label sequence of one or
+   several dictionary tiers (cross-tier via the union of their dictionaries), per file and
+   for the whole corpus: cell *(i, j)* = how often label *i* appeared immediately after
+   label *j*, divided by all instances of label *i*.
 
 ## 2. Key domain mapping (ELAN → app)
 
@@ -76,6 +80,7 @@ src/cclc/
 │   ├── elan_document.py     # ElanDocument: parse one .eaf → tiers, annotations, CVs
 │   ├── corpus.py            # Corpus, CorpusProject (the internal data structure)
 │   ├── analysis.py          # pure functions: counts, mean/stdev, coverage
+│   ├── transitions.py       # transition matrices over merged label sequences
 │   └── query.py             # query AST (term/AND/OR/NOT + max distance), evaluator → instances
 ├── ui/
 │   ├── main_window.py       # QMainWindow, tabs: "Corpora" | "Analysis" | "Interval" | "Query"
@@ -83,6 +88,7 @@ src/cclc/
 │   ├── analysis_view.py     # View 2: selection form + result tables
 │   ├── query_view.py        # View 3: visual query builder + instance browser + statistics
 │   ├── interval_view.py     # View 4: per-file label counts within a time window
+│   ├── transitions_view.py  # View 5: label-to-label transition matrices
 │   └── models.py            # Qt item models (corpora tree, result tables)
 └── tests/
     ├── data/                # small fixture .eaf files (incl. CVs, edge cases)
@@ -375,7 +381,29 @@ label per file plus the dictionary coverage restricted to the interval.
 - The missing-tier hard error and the case-sensitivity toggle of §6.2 apply unchanged.
 - Recomputed live while sliding (per-file parses are cached, so this stays instant).
 
-## 9. Testing strategy
+## 9. View 5 — Transition matrices
+
+Fifth tab ("Transitions"). For one corpus and a selectable **set** of dictionary tiers, the
+annotations are merged into one sequence ordered by start time and the label-to-label
+transitions are tabulated.
+
+- **Definition:** cell *(i, j)* = (# times an annotation with label *i* immediately follows
+  an annotation with label *j* in the sequence) / (# of all instances of label *i*). Rows
+  are *i* (the following label), columns are *j* (the predecessor); the row header shows the
+  denominator `n=…`. A row's cells can sum to less than 1 because the first annotation of a
+  sequence has no predecessor; the ratio is undefined ("—") when label *i* never occurs.
+- **Cross-tier:** selecting several tiers uses the **union of their dictionaries** as the
+  label set and merges their annotations into one time-ordered sequence, so transitions
+  across tiers are counted.
+- **Scope:** a combo box switches between *whole corpus* — transition counts and label
+  totals are summed over the files before normalising; sequences never continue across a
+  file boundary — and any single file of the corpus.
+- Out-of-dictionary values, empty values and untimed annotations are skipped transparently
+  (the surrounding annotations become adjacent). The missing-tier hard error and the
+  case-sensitivity toggle of §6.2 apply; a "raw counts" toggle shows the numerators instead
+  of the ratios. CSV export.
+
+## 10. Testing strategy
 
 - Hand-crafted fixture `.eaf` files in `tests/data/`: minimal file with 2 CV tiers + 1 free
   tier; file with EAF 2.8 `CV_ENTRY_ML`; file with out-of-dictionary values; file missing a
@@ -393,9 +421,12 @@ label per file plus the dictionary coverage restricted to the interval.
   expected message naming the file; invalid `.eaf` files are rejected on import.
 - Interval tests (§8): containment boundary inclusivity, overlapping vs contained vs merely
   touching, interval-restricted coverage, corpus time extent, bound ordering in the UI.
+- Transition tests (§9): per-label totals and ratios against hand-computed values, corpus
+  aggregation without cross-file transitions, cross-tier union and merging,
+  out-of-dictionary skipping, single-file scope, case folding, missing-tier error.
 - UI smoke test (optional, `pytest-qt`): build main window, simulate a drop, switch views.
 
-## 10. Milestones
+## 11. Milestones
 
 | # | Deliverable | Contents |
 |---|---|---|
@@ -408,13 +439,14 @@ label per file plus the dictionary coverage restricted to the interval.
 | 7 | Core: query engine | query AST (AND/OR/NOT, max distance + reference point, interval relations), evaluator with both counting modes, near-anchor NOT, `Instance` + tests |
 | 8 | View 3 | visual query builder, instance browser with tier timeline, statistics hand-off incl. combination breakdown |
 | 9 | View 4 | interval label counts with slidable/enterable bounds, interval-restricted coverage |
-| 10 | Polish | project save/load (incl. saved queries), CSV export, background parsing/caching, error reporting |
-| 11 | (Stretch) | Ctrl+drag copy, multi-label selection, bar chart (matplotlib), "open in ELAN", PyInstaller build (one-folder mode, see §3.1) |
+| 10 | View 5 | transition matrices (per file / corpus, cross-tier via union dictionary), raw-count toggle |
+| 11 | Polish | project save/load (incl. saved queries), CSV export, background parsing/caching, error reporting |
+| 12 | (Stretch) | Ctrl+drag copy, multi-label selection, bar chart (matplotlib), "open in ELAN", PyInstaller build (one-folder mode, see §3.1) |
 
-Milestones 2–3, 7 and the core part of 9 are pure-Python and reviewable independently of any
-UI work.
+Milestones 2–3, 7 and the core parts of 9–10 are pure-Python and reviewable independently of
+any UI work.
 
-## 11. Resolved decisions
+## 12. Resolved decisions
 
 All former open questions were decided with the project owner (2026-06-11):
 

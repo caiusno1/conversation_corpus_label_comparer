@@ -57,9 +57,9 @@ def test_query_view_runs(app, tmp_path):
     controller.add_corpus("C")
     controller.add_files("C", [f])
 
-    # The Query view is the fourth tab (Corpora, Analysis, Interval, Query).
+    # The Query view is the fifth tab (Corpora, Analysis, Interval, Transitions, Query).
     tabs = window.centralWidget()
-    query_view = tabs.widget(3)
+    query_view = tabs.widget(4)
     query_view.corpus_combo.setCurrentText("C")
 
     # Programmatically populate the builder: point AND nod.
@@ -124,3 +124,52 @@ def test_interval_view_counts_and_coverage(app, tmp_path):
     # bounds stay ordered: pushing From above To drags To along
     interval_view.lo_spin.setValue(600)
     assert interval_view.hi_spin.value() == 600
+
+
+def test_transitions_view_matrix(app, tmp_path):
+    window = MainWindow()
+    controller = window.controller
+    f1 = write_eaf(
+        tmp_path / "f1.eaf",
+        tiers={"G": [("a", 0, 10), ("b", 100, 110), ("a", 200, 210)]},
+        cvs={"cv": ["a", "b"]},
+        tier_cv={"G": "cv"},
+    )
+    f2 = write_eaf(
+        tmp_path / "f2.eaf",
+        tiers={"G": [("a", 0, 10)]},
+        cvs={"cv": ["a", "b"]},
+        tier_cv={"G": "cv"},
+    )
+    controller.add_corpus("C")
+    controller.add_files("C", [f1, f2])
+
+    tabs = window.centralWidget()
+    view = tabs.widget(3)  # Corpora, Analysis, Interval, Transitions, Query
+    assert view.corpus_combo.currentText() == "C"
+    assert view._selected_tiers() == ["G"]  # first tier checked by default
+
+    # whole corpus: totals a=3, b=1; transitions: (b after a)=1, (a after b)=1
+    headers = [
+        view.table.horizontalHeaderItem(c).text()
+        for c in range(view.table.columnCount())
+    ]
+    assert headers == ["a", "b"]
+    row_headers = [
+        view.table.verticalHeaderItem(r).text() for r in range(view.table.rowCount())
+    ]
+    assert row_headers == ["a  (n=3)", "b  (n=1)"]
+    assert view.table.item(0, 1).text() == "0.333"  # a after b: 1/3
+    assert view.table.item(1, 0).text() == "1.000"  # b after a: 1/1
+    assert view.table.item(0, 0).text() == "0.000"  # a after a: 0/3
+
+    # raw counts toggle
+    view.raw_check.setChecked(True)
+    assert view.table.item(0, 1).text() == "1"
+    view.raw_check.setChecked(False)
+
+    # single-file scope: f2 has one a, no transitions, b never occurs
+    idx = view.scope_combo.findText("f2.eaf")
+    view.scope_combo.setCurrentIndex(idx)
+    assert view.table.item(1, 0).text() == "—"  # ratio undefined for b
+    assert "0 transitions" in view.summary.text()
