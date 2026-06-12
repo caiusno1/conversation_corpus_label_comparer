@@ -383,25 +383,37 @@ label per file plus the dictionary coverage restricted to the interval.
 
 ## 9. View 5 — Transition matrices
 
-Fifth tab ("Transitions"). For one corpus and a selectable **set** of dictionary tiers, the
-annotations are merged into one sequence ordered by start time and the label-to-label
-transitions are tabulated.
+Fifth tab ("Transitions"). All modes share the cell definition: cell *(i, j)* = (# times
+element *i* immediately follows element *j*) / (# of all instances of element *i*). Rows are
+*i* (the following element), columns are *j* (the predecessor); the row header shows the
+denominator `n=…`. A row can sum to less than 1 because the first element of a sequence has
+no predecessor; the ratio is undefined ("—") when element *i* never occurs.
 
-- **Definition:** cell *(i, j)* = (# times an annotation with label *i* immediately follows
-  an annotation with label *j* in the sequence) / (# of all instances of label *i*). Rows
-  are *i* (the following label), columns are *j* (the predecessor); the row header shows the
-  denominator `n=…`. A row's cells can sum to less than 1 because the first annotation of a
-  sequence has no predecessor; the ratio is undefined ("—") when label *i* never occurs.
-- **Cross-tier:** selecting several tiers uses the **union of their dictionaries** as the
-  label set and merges their annotations into one time-ordered sequence, so transitions
-  across tiers are counted.
-- **Scope:** a combo box switches between *whole corpus* — transition counts and label
-  totals are summed over the files before normalising; sequences never continue across a
-  file boundary — and any single file of the corpus.
+Three **modes** (combo box):
+
+1. **Merged sequence** — for a selectable *set* of dictionary tiers, the annotations are
+   merged into one sequence ordered by start time; elements are the labels of the **union of
+   the selected tiers' dictionaries**, so transitions across tiers are counted.
+2. **Tier → tier** — a *source* tier (columns *j*) and a *target* tier (rows *i*) are
+   selected; for every source annotation the transition target is the **next annotation on
+   the target tier** (the first one with a strictly later start time). Rows can sum to more
+   than 1 because several source annotations may share the same next target annotation.
+3. **Compound → compound** — two compounds A and B are defined with the visual AND/OR/NOT
+   builder of View 3 (same max-distance/reference-point/chain/NOT semantics, §7.1); their
+   instances, anchored at their start times, form the sequence and the matrix is computed
+   over {A, B} ("transition probabilities from one compound to a different compound").
+   Computed on demand via a *Run compounds* button.
+
+Common to all modes:
+
+- **Scope:** a combo box switches between *whole corpus* — transition counts and totals are
+  summed over the files before normalising; sequences never continue across a file
+  boundary — and any single file of the corpus.
 - Out-of-dictionary values, empty values and untimed annotations are skipped transparently
-  (the surrounding annotations become adjacent). The missing-tier hard error and the
-  case-sensitivity toggle of §6.2 apply; a "raw counts" toggle shows the numerators instead
-  of the ratios. CSV export.
+  (the surrounding annotations become adjacent). The missing-tier hard error applies; the
+  case-sensitivity toggle of §6.2 applies to modes 1–2 (compounds always match
+  case-sensitively, as in View 3). A "raw counts" toggle shows the numerators instead of the
+  ratios. CSV export.
 
 ## 10. Testing strategy
 
@@ -423,7 +435,9 @@ transitions are tabulated.
   touching, interval-restricted coverage, corpus time extent, bound ordering in the UI.
 - Transition tests (§9): per-label totals and ratios against hand-computed values, corpus
   aggregation without cross-file transitions, cross-tier union and merging,
-  out-of-dictionary skipping, single-file scope, case folding, missing-tier error.
+  out-of-dictionary skipping, single-file scope, case folding, missing-tier error; tier→tier
+  mode (next-target lookup, shared targets, simultaneous starts excluded); compound mode
+  (plain and AND compounds, scope, validation).
 - UI smoke test (optional, `pytest-qt`): build main window, simulate a drop, switch views.
 
 ## 11. Milestones
@@ -439,7 +453,7 @@ transitions are tabulated.
 | 7 | Core: query engine | query AST (AND/OR/NOT, max distance + reference point, interval relations), evaluator with both counting modes, near-anchor NOT, `Instance` + tests |
 | 8 | View 3 | visual query builder, instance browser with tier timeline, statistics hand-off incl. combination breakdown |
 | 9 | View 4 | interval label counts with slidable/enterable bounds, interval-restricted coverage |
-| 10 | View 5 | transition matrices (per file / corpus, cross-tier via union dictionary), raw-count toggle |
+| 10 | View 5 | transition matrices in three modes (merged sequence, tier→tier, compound→compound), raw-count toggle |
 | 11 | Polish | project save/load (incl. saved queries), CSV export, background parsing/caching, error reporting |
 | 12 | (Stretch) | Ctrl+drag copy, multi-label selection, bar chart (matplotlib), "open in ELAN", PyInstaller build (one-folder mode, see §3.1) |
 

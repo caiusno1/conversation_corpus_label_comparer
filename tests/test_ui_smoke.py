@@ -18,7 +18,6 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from cclc.core.query import Term  # noqa: E402
 from cclc.ui.config_view import CORPUS_ROLE, PATH_ROLE, ConfigView  # noqa: E402
 from cclc.ui.main_window import MainWindow  # noqa: E402
-from cclc.ui.query_view import NODE_ROLE  # noqa: E402
 from tests.conftest import write_eaf  # noqa: E402
 
 
@@ -63,14 +62,8 @@ def test_query_view_runs(app, tmp_path):
     query_view.corpus_combo.setCurrentText("C")
 
     # Programmatically populate the builder: point AND nod.
-    root = query_view.builder.topLevelItem(0)
     for term in (Term("A", "point"), Term("B", "nod")):
-        from PySide6.QtWidgets import QTreeWidgetItem
-
-        item = QTreeWidgetItem()
-        item.setData(0, NODE_ROLE, {"kind": "term", "term": term})
-        root.addChild(item)
-        query_view._refresh_builder_labels(item)
+        query_view.builder_widget.add_term(term)
 
     query_view.distance.setValue(1000)
     query_view._run()
@@ -173,3 +166,50 @@ def test_transitions_view_matrix(app, tmp_path):
     view.scope_combo.setCurrentIndex(idx)
     assert view.table.item(1, 0).text() == "—"  # ratio undefined for b
     assert "0 transitions" in view.summary.text()
+
+
+def test_transitions_view_tier_to_tier_and_compound_modes(app, tmp_path):
+    window = MainWindow()
+    controller = window.controller
+    f = write_eaf(
+        tmp_path / "f.eaf",
+        tiers={
+            "S": [("j1", 0, 10), ("j2", 1000, 1010)],
+            "T": [("i1", 500, 510), ("i2", 1500, 1510)],
+        },
+        cvs={"cvs": ["j1", "j2"], "cvt": ["i1", "i2"]},
+        tier_cv={"S": "cvs", "T": "cvt"},
+    )
+    controller.add_corpus("C")
+    controller.add_files("C", [f])
+
+    tabs = window.centralWidget()
+    view = tabs.widget(3)
+
+    # --- mode 2: tier -> tier ---
+    view.mode_combo.setCurrentIndex(1)
+    view.source_tier_combo.setCurrentText("S")
+    view.target_tier_combo.setCurrentText("T")
+    cols = [
+        view.table.horizontalHeaderItem(c).text()
+        for c in range(view.table.columnCount())
+    ]
+    rows = [view.table.verticalHeaderItem(r).text() for r in range(view.table.rowCount())]
+    assert cols == ["j1", "j2"]  # source dictionary = columns
+    assert rows == ["i1  (n=1)", "i2  (n=1)"]  # target dictionary = rows
+    assert view.table.item(0, 0).text() == "1.000"  # i1 after j1
+    assert view.table.item(1, 1).text() == "1.000"  # i2 after j2
+    assert view.table.item(1, 0).text() == "0.000"
+
+    # --- mode 3: compound -> compound ---
+    view.mode_combo.setCurrentIndex(2)
+    assert "Run compounds" in view.status.text()  # hint until run
+    view.builder_a.add_term(Term("S", "j1"))
+    view.builder_b.add_term(Term("T", "i1"))
+    view.distance.setValue(10000)
+    view._run_compounds()
+    rows = [view.table.verticalHeaderItem(r).text() for r in range(view.table.rowCount())]
+    assert rows == ["A  (n=1)", "B  (n=1)"]
+    # sequence: A(j1@0), B(i1@500) -> B after A = 1/1
+    assert view.table.item(1, 0).text() == "1.000"
+    assert "2 instances, 1 transitions" in view.summary.text()

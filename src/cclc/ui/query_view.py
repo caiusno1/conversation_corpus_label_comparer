@@ -9,22 +9,16 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QFileDialog,
-    QFormLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
     QScrollArea,
     QSpinBox,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -32,58 +26,15 @@ from PySide6.QtWidgets import (
 from cclc.core import analysis
 from cclc.core.analysis import MissingTierError
 from cclc.core.query import (
-    RELATIONS,
-    Group,
     Instance,
     Query,
-    Term,
     evaluate,
     instance_statistics,
 )
 
 from .controller import ProjectController
+from .query_builder import NODE_ROLE, QueryBuilderWidget  # noqa: F401 (re-export)
 from .timeline import Box, TimelineWidget
-
-NODE_ROLE = Qt.UserRole + 1
-
-
-class TermDialog(QDialog):
-    """Edit a single term: tier, label and NOT flag."""
-
-    def __init__(self, parent, tiers: list[str], label_provider, term: Term | None):
-        super().__init__(parent)
-        self.setWindowTitle("Term")
-        self._label_provider = label_provider
-        form = QFormLayout(self)
-        self.tier = QComboBox()
-        self.tier.addItems(tiers)
-        self.label = QComboBox()
-        self.label.setEditable(True)
-        self.negated = QCheckBox("NOT")
-        if term is not None:
-            self.tier.setCurrentText(term.tier)
-            self.negated.setChecked(term.negated)
-        self.tier.currentTextChanged.connect(self._refresh_labels)
-        self._refresh_labels()
-        if term is not None:
-            self.label.setCurrentText(term.label)
-        form.addRow("Tier:", self.tier)
-        form.addRow("Label:", self.label)
-        form.addRow("", self.negated)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
-
-    def _refresh_labels(self) -> None:
-        current = self.label.currentText()
-        self.label.clear()
-        self.label.addItems(self._label_provider(self.tier.currentText()))
-        if current:
-            self.label.setCurrentText(current)
-
-    def term(self) -> Term:
-        return Term(self.tier.currentText(), self.label.currentText(), self.negated.isChecked())
 
 
 class QueryView(QWidget):
@@ -127,24 +78,10 @@ class QueryView(QWidget):
         # --- query builder ---
         builder_box = QGroupBox("Query builder")
         builder_layout = QVBoxLayout(builder_box)
-        self.builder = QTreeWidget()
-        self.builder.setHeaderLabels(["Expression"])
-        builder_layout.addWidget(self.builder)
-        self.builder.itemDoubleClicked.connect(self._edit_term)
-
-        btn_row = QHBoxLayout()
-        for label, slot in (
-            ("+ AND group", lambda: self._add_group("AND")),
-            ("+ OR group", lambda: self._add_group("OR")),
-            ("+ Term", self._add_term),
-            ("Toggle NOT", self._toggle_not),
-            ("Set relation", self._set_relation),
-            ("Delete", self._delete_node),
-        ):
-            b = QPushButton(label)
-            b.clicked.connect(slot)
-            btn_row.addWidget(b)
-        builder_layout.addLayout(btn_row)
+        self.builder_widget = QueryBuilderWidget(self._all_tier_names, self._labels_for)
+        self.builder_widget.changed.connect(self._update_expression)
+        builder_layout.addWidget(self.builder_widget)
+        self.builder = self.builder_widget.tree  # kept for tests/back-compat
         self.expr_label = QLabel("")
         self.expr_label.setWordWrap(True)
         self.expr_label.setStyleSheet("font-style: italic; color: #225;")
@@ -212,40 +149,9 @@ class QueryView(QWidget):
         inst_layout.addWidget(self.stats_summary)
         splitter.addWidget(inst_box)
 
-        self._init_builder_root()
         self._reload_corpora()
 
-    # --- builder model -------------------------------------------------------
-
-    def _init_builder_root(self) -> None:
-        self.builder.clear()
-        root = QTreeWidgetItem()
-        root.setData(
-            0, NODE_ROLE, {"kind": "group", "op": "AND", "negated": False, "relation": None}
-        )
-        self.builder.addTopLevelItem(root)
-        self._refresh_builder_labels(root)
-        root.setExpanded(True)
-        self._update_expression()
-
-    def _selected_or_root(self) -> QTreeWidgetItem:
-        items = self.builder.selectedItems()
-        return items[0] if items else self.builder.topLevelItem(0)
-
-    def _group_target(self, item: QTreeWidgetItem) -> QTreeWidgetItem:
-        data = item.data(0, NODE_ROLE)
-        if data["kind"] == "group":
-            return item
-        return item.parent() or self.builder.topLevelItem(0)
-
-    def _add_group(self, op: str) -> None:
-        target = self._group_target(self._selected_or_root())
-        child = QTreeWidgetItem()
-        child.setData(0, NODE_ROLE, {"kind": "group", "op": op, "negated": False, "relation": None})
-        target.addChild(child)
-        target.setExpanded(True)
-        self._refresh_builder_labels(child)
-        self._update_expression()
+    # --- builder integration ---------------------------------------------------
 
     def _all_tier_names(self) -> list[str]:
         corpus = self._current_corpus()
@@ -268,128 +174,16 @@ class QueryView(QWidget):
         except Exception:  # noqa: BLE001
             return []
 
-    def _add_term(self) -> None:
-        tiers = self._all_tier_names()
-        if not tiers:
-            QMessageBox.information(self, "Term", "Add files to the selected corpus first.")
-            return
-        dlg = TermDialog(self, tiers, self._labels_for, None)
-        if dlg.exec() != QDialog.Accepted:
-            return
-        target = self._group_target(self._selected_or_root())
-        item = QTreeWidgetItem()
-        item.setData(0, NODE_ROLE, {"kind": "term", "term": dlg.term()})
-        target.addChild(item)
-        target.setExpanded(True)
-        self._refresh_builder_labels(item)
-        self._update_expression()
-
-    def _edit_term(self, item: QTreeWidgetItem) -> None:
-        data = item.data(0, NODE_ROLE)
-        if data["kind"] != "term":
-            return
-        dlg = TermDialog(self, self._all_tier_names(), self._labels_for, data["term"])
-        if dlg.exec() == QDialog.Accepted:
-            data["term"] = dlg.term()
-            item.setData(0, NODE_ROLE, data)
-            self._refresh_builder_labels(item)
-            self._update_expression()
-
-    def _toggle_not(self) -> None:
-        item = self._selected_or_root()
-        data = item.data(0, NODE_ROLE)
-        if data["kind"] == "term":
-            data["term"].negated = not data["term"].negated
-        else:
-            data["negated"] = not data["negated"]
-        item.setData(0, NODE_ROLE, data)
-        self._refresh_builder_labels(item)
-        self._update_expression()
-
-    def _set_relation(self) -> None:
-        item = self._selected_or_root()
-        data = item.data(0, NODE_ROLE)
-        if data["kind"] != "group" or data["op"] != "AND":
-            QMessageBox.information(self, "Relation", "Relations apply to AND groups only.")
-            return
-        options = ["(distance)", *RELATIONS]
-        from PySide6.QtWidgets import QInputDialog
-
-        choice, ok = QInputDialog.getItem(
-            self, "Interval relation", "Relation:", options, editable=False
-        )
-        if ok:
-            data["relation"] = None if choice == "(distance)" else choice
-            item.setData(0, NODE_ROLE, data)
-            self._refresh_builder_labels(item)
-            self._update_expression()
-
-    def _delete_node(self) -> None:
-        item = self._selected_or_root()
-        if item is self.builder.topLevelItem(0):
-            QMessageBox.information(self, "Delete", "The root group cannot be deleted.")
-            return
-        item.parent().removeChild(item)
-        self._update_expression()
-
-    def _refresh_builder_labels(self, item: QTreeWidgetItem) -> None:
-        data = item.data(0, NODE_ROLE)
-        if data["kind"] == "term":
-            term: Term = data["term"]
-            prefix = "NOT " if term.negated else ""
-            item.setText(0, f"{prefix}{term.tier} = “{term.label}”")
-        else:
-            label = "ALL of" if data["op"] == "AND" else "ANY of"
-            if data["negated"]:
-                label = "NOT " + label
-            if data.get("relation"):
-                label += f"  [{data['relation']}]"
-            item.setText(0, label)
-
-    # --- build Query from the tree ------------------------------------------
-
-    def _build_node(self, item: QTreeWidgetItem):
-        data = item.data(0, NODE_ROLE)
-        if data["kind"] == "term":
-            return data["term"]
-        children = [self._build_node(item.child(i)) for i in range(item.childCount())]
-        return Group(
-            op=data["op"],
-            children=children,
-            negated=data["negated"],
-            relation=data.get("relation"),
-        )
-
-    def _build_query(self) -> Query | None:
-        root_item = self.builder.topLevelItem(0)
-        root = self._build_node(root_item)
-        if not isinstance(root, Group):
-            root = Group("AND", [root])
+    def _build_query(self) -> Query:
         return Query(
-            root=root,
+            root=self.builder_widget.root_group(),
             max_distance_ms=self.distance.value(),
             reference_point=self.ref_point.currentText(),
             counting_mode=self.counting.currentText(),
         )
 
-    def _render_node(self, item: QTreeWidgetItem) -> str:
-        data = item.data(0, NODE_ROLE)
-        if data["kind"] == "term":
-            term: Term = data["term"]
-            return f"{'NOT ' if term.negated else ''}{term.label}"
-        joiner = " AND " if data["op"] == "AND" else " OR "
-        parts = [self._render_node(item.child(i)) for i in range(item.childCount())]
-        inner = joiner.join(parts) if parts else "∅"
-        text = f"({inner})"
-        if data["negated"]:
-            text = "NOT " + text
-        if data.get("relation"):
-            text += f" [{data['relation']}]"
-        return text
-
     def _update_expression(self) -> None:
-        root = self.builder.topLevelItem(0)
-        expr = self._render_node(root) if root else ""
+        expr = self.builder_widget.render_expression()
         tail = f", within {self.distance.value()} ms at {self.ref_point.currentText()}"
         self.expr_label.setText("≙ " + expr + tail)
 
@@ -475,19 +269,7 @@ class QueryView(QWidget):
         self.visible_tiers_box.addStretch(1)
 
     def _query_tiers(self) -> set[str]:
-        tiers: set[str] = set()
-
-        def walk(item: QTreeWidgetItem):
-            data = item.data(0, NODE_ROLE)
-            if data["kind"] == "term":
-                tiers.add(data["term"].tier)
-            for i in range(item.childCount()):
-                walk(item.child(i))
-
-        root = self.builder.topLevelItem(0)
-        if root:
-            walk(root)
-        return tiers
+        return self.builder_widget.query_tiers()
 
     # --- navigation & timeline ----------------------------------------------
 
