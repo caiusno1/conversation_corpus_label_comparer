@@ -41,11 +41,60 @@ Five views (tabs):
 
 ## Installation
 
-Requires Python ≥ 3.10.
+Requires Python ≥ 3.10 (PySide6 wheels for the very newest Python release can
+lag by a few months). The only runtime dependency is **PySide6 (Qt for
+Python)**. Install into an **isolated environment** — a virtual environment or a
+dedicated conda environment — rather than a shared/base interpreter; Qt is
+sensitive to conflicting libraries from other installations, which is the usual
+cause of import failures (see [Troubleshooting](#troubleshooting)).
+
+### Option 1 — virtual environment (recommended)
+
+Create the environment with a python.org / system Python:
 
 ```bash
+# Windows (PowerShell) — the py launcher avoids picking a conda interpreter
+py -3.12 -m venv .venv
+.venv\Scripts\activate
+
+# macOS / Linux
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Then, inside the activated environment:
+
+```bash
+python -m pip install --upgrade pip
 pip install -e .          # runtime: PySide6
-pip install -e ".[dev]"   # plus pytest, pytest-qt, ruff
+pip install -e ".[dev]"   # plus pytest, pytest-qt, ruff (for development)
+```
+
+### Option 2 — conda
+
+Use a **dedicated** environment, not `base`:
+
+```bash
+conda create -n cclc python=3.11
+conda activate cclc
+pip install -e .
+```
+
+If importing Qt still fails inside conda (see [Troubleshooting](#troubleshooting)),
+let conda provide Qt itself instead of the PyPI wheel:
+
+```bash
+pip uninstall -y PySide6 PySide6-Essentials PySide6-Addons shiboken6
+conda install -c conda-forge pyside6
+pip install -e . --no-deps   # install this package without re-pulling PySide6 from PyPI
+```
+
+### Option 3 — plain pip
+
+If you already manage your environment, a direct install works too:
+
+```bash
+pip install -e .
 ```
 
 ## Running
@@ -54,6 +103,12 @@ pip install -e ".[dev]"   # plus pytest, pytest-qt, ruff
 cclc            # via the installed entry point
 # or
 python -m cclc.main
+```
+
+Quick check that Qt loads correctly in your environment:
+
+```bash
+python -c "from PySide6 import QtWidgets; print('ok')"
 ```
 
 ## Development
@@ -65,6 +120,74 @@ fully unit-tested; the Qt UI (`src/cclc/ui/`) only renders and delegates.
 # Core + UI tests. The UI smoke tests use Qt's offscreen platform.
 QT_QPA_PLATFORM=offscreen pytest
 ruff check src tests
+```
+
+## Troubleshooting
+
+### Windows: `ImportError: DLL load failed while importing QtWidgets: The specified procedure could not be found`
+
+When Qt is imported it loads several DLLs, including the Microsoft Visual C++
+runtime (`msvcp140.dll`, `vcruntime140.dll`). Windows searches the **folder of
+the running `python.exe` first**, so if that interpreter ships its *own*, older
+copies of those runtime DLLs, they get loaded instead of the newer ones in
+`C:\Windows\System32`. The old copies are missing symbols Qt 6 needs, which
+surfaces as *"The specified procedure could not be found"* (Windows error 127).
+The same can happen when another application puts old Qt or MSVC runtime DLLs
+earlier on your `PATH`.
+
+This is most common with **Anaconda / Miniconda**: the `base` environment keeps
+`msvcp140.dll` / `vcruntime140.dll` right next to its `python.exe`
+(e.g. `C:\Users\<you>\anaconda3\`), so a `pip install`ed PySide6 launched from
+`base` picks up those stale DLLs and fails to load — even though PySide6 and the
+Qt DLLs themselves are installed correctly.
+
+**Confirm the cause** (in PowerShell use `where.exe`, not the `where` alias):
+
+```powershell
+where.exe msvcp140.dll vcruntime140.dll
+```
+
+If a copy under an Anaconda/conda folder is listed *before* the one in
+`C:\Windows\System32`, that shadowing is the problem.
+
+**Fix — run from an isolated environment** so the stale DLLs are no longer next
+to your interpreter:
+
+- **Virtual environment:** create a python.org venv as in
+  [Installation Option 1](#option-1--virtual-environment-recommended). Its
+  `python.exe` lives in `.venv\Scripts\`, which has no stray runtime DLLs, so Qt
+  loads the correct ones from System32. Verify the interpreter:
+
+  ```powershell
+  python -c "import sys; print(sys.executable)"   # must be inside .venv, not anaconda3
+  ```
+
+- **Conda:** use a **dedicated** environment (Installation Option 2), not
+  `base` — a freshly created env carries its own up-to-date runtime next to its
+  `python.exe`. If it still fails, install Qt from conda-forge (the
+  `conda install -c conda-forge pyside6` variant) so conda keeps Qt and its
+  runtime consistent. As an in-place alternative you can refresh the base
+  runtime with `conda update -n base -c conda-forge vc14_runtime`.
+
+The check that you're clear, in any environment:
+
+```bash
+python -c "from PySide6 import QtWidgets; print('ok')"
+```
+
+### Linux: Qt fails to start, or "could not connect to display"
+
+On headless machines (CI, servers, containers) use Qt's offscreen platform:
+
+```bash
+QT_QPA_PLATFORM=offscreen python -m cclc.main
+```
+
+Minimal Linux installs may also need a few system libraries, e.g. on
+Debian/Ubuntu:
+
+```bash
+sudo apt-get install libegl1 libgl1 libxkbcommon0 libdbus-1-3
 ```
 
 ## Licensing
