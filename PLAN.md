@@ -389,21 +389,24 @@ label per file plus the dictionary coverage restricted to the interval.
 
 ## 9. View 5 — Transition matrices
 
-Fifth tab ("Transitions"). All modes share the cell definition: cell *(i, j)* = (# times
-element *i* immediately follows element *j*) / (# of all instances of element *i*). Rows are
-*i* (the following element), columns are *j* (the predecessor); the row header shows the
-denominator `n=…`. A row can sum to less than 1 because the first element of a sequence has
-no predecessor; the ratio is undefined ("—") when element *i* never occurs.
+Fifth tab ("Transitions"). All modes produce a **row-stochastic** matrix: cell *(i, j)* =
+(# times element *i* is immediately followed by element *j*) / (# of transitions *out of* *i*,
+i.e. occurrences of *i* that have a successor). Rows are the "from" element *i*, columns the
+"to" element *j*; **each row sums to 1**. The row header shows the denominator `n=…` (the
+number of transitions out of *i*); a row is empty (every cell "—") when *i* never has a
+successor — e.g. a label that only ever ends a sequence. Normalising by *all* occurrences of
+*i* (including the final one with no successor) is the bug that previously made rows sum to
+less than 1; the denominator is the out-transition count instead.
 
 Three **modes** (combo box):
 
 1. **Merged sequence** — for a selectable *set* of dictionary tiers, the annotations are
    merged into one sequence ordered by start time; elements are the labels of the **union of
    the selected tiers' dictionaries**, so transitions across tiers are counted.
-2. **Tier → tier** — a *source* tier (columns *j*) and a *target* tier (rows *i*) are
-   selected; for every source annotation the transition target is the **next annotation on
-   the target tier** (the first one with a strictly later start time). Rows can sum to more
-   than 1 because several source annotations may share the same next target annotation.
+2. **Tier → tier** — a *source* tier (rows *i*, the "from") and a *target* tier (columns *j*,
+   the "to") are selected; for every source annotation the successor is the **next annotation
+   on the target tier** (the first one with a strictly later start time). Each row sums to 1
+   (a source annotation with no later target contributes no transition).
 3. **Compound → compound** — two compounds A and B are defined with the visual AND/OR/NOT
    builder of View 3 (same max-distance/reference-point/chain/NOT semantics, §7.1); their
    instances, anchored at their start times, form the sequence and the matrix is computed
@@ -443,11 +446,12 @@ Common to all modes:
   expected message naming the file; invalid `.eaf` files are rejected on import.
 - Interval tests (§8): containment boundary inclusivity, overlapping vs contained vs merely
   touching, interval-restricted coverage, corpus time extent, bound ordering in the UI.
-- Transition tests (§9): per-label totals and ratios against hand-computed values, corpus
-  aggregation without cross-file transitions, cross-tier union and merging,
-  out-of-dictionary skipping, single-file scope, case folding, missing-tier error; tier→tier
-  mode (next-target lookup, shared targets, simultaneous starts excluded); compound mode
-  (plain and AND compounds, scope, validation).
+- Transition tests (§9): per-row denominators and ratios against hand-computed values with an
+  explicit **every-row-sums-to-1** check, corpus aggregation without cross-file transitions,
+  cross-tier union and merging, out-of-dictionary skipping, single-file scope, case folding,
+  missing-tier error; tier→tier mode (next-target lookup, shared targets, simultaneous starts
+  excluded); compound mode (plain and AND compounds, free-variable expansion, scope,
+  validation).
 - UI smoke test (optional, `pytest-qt`): build main window, simulate a drop, switch views.
 
 ## 11. Milestones

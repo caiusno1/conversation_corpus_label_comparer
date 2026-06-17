@@ -6,6 +6,7 @@ from cclc.core.analysis import MissingTierError
 from cclc.core.corpus import CorpusProject
 from cclc.core.query import Group, Query, Term
 from cclc.core.transitions import (
+    TransitionResult,
     compound_transition_matrix,
     tier_to_tier_matrix,
     transition_matrix,
@@ -19,6 +20,19 @@ def _project_with(tmp_path, files):
     for name, kwargs in files.items():
         corpus.add(write_eaf(tmp_path / name, **kwargs))
     return project, corpus
+
+
+def _assert_rows_sum_to_one(res: TransitionResult) -> None:
+    """Every non-empty row of a stochastic matrix sums to 1."""
+    for i in res.row_labels:
+        ratios = [res.ratio(i, j) for j in res.col_labels]
+        if res.row_totals.get(i, 0) == 0:
+            assert all(r is None for r in ratios)  # empty row -> all undefined
+        else:
+            assert sum(r for r in ratios if r is not None) == pytest.approx(1.0)
+
+
+# --- mode 1: merged sequence ----------------------------------------------------
 
 
 def test_single_tier_single_file(tmp_path):
@@ -45,19 +59,19 @@ def test_single_tier_single_file(tmp_path):
     res = transition_matrix(project, corpus, ["G"])
     assert res.row_labels == ["a", "b", "c"]
     assert res.col_labels == ["a", "b", "c"]
-    assert res.label_totals == {"a": 3, "b": 1, "c": 1}
-    # transitions (i after j): b after a, a after b, c after a, a after c
-    assert res.count("b", "a") == 1
+    # transitions a->b, b->a, a->c, c->a. The trailing a has no successor.
     assert res.count("a", "b") == 1
-    assert res.count("c", "a") == 1
     assert res.count("a", "c") == 1
-    assert res.count("a", "a") == 0
-    # ratios: divided by all instances of i
-    assert res.ratio("a", "b") == pytest.approx(1 / 3)
+    assert res.count("b", "a") == 1
+    assert res.count("c", "a") == 1
+    # row denominators = transitions OUT of each label (the trailing a excluded)
+    assert res.row_totals == {"a": 2, "b": 1, "c": 1}
+    # forward, row-stochastic: a is followed equally by b and c
+    assert res.ratio("a", "b") == pytest.approx(0.5)
+    assert res.ratio("a", "c") == pytest.approx(0.5)
     assert res.ratio("b", "a") == pytest.approx(1.0)
-    # first annotation has no predecessor: row sums can stay below 1
-    row_a = sum(res.ratio("a", j) for j in res.col_labels)
-    assert row_a == pytest.approx(2 / 3)
+    assert res.ratio("a", "a") == pytest.approx(0.0)
+    _assert_rows_sum_to_one(res)
     assert res.annotations_considered == 5
     assert res.transition_total == 4
 
@@ -76,13 +90,14 @@ def test_corpus_aggregates_without_cross_file_transitions(tmp_path):
         },
     )
     res = transition_matrix(project, corpus, ["G"])
-    assert res.label_totals == {"a": 2, "b": 2}
-    # f1 contributes b-after-a, f2 contributes a-after-b; the file boundary
-    # between f1's last (b) and f2's first (b) must NOT count.
-    assert res.count("b", "a") == 1
+    # f1 contributes a->b, f2 contributes b->a; the file boundary between f1's
+    # last (b) and f2's first (b) must NOT count.
     assert res.count("a", "b") == 1
+    assert res.count("b", "a") == 1
     assert res.count("b", "b") == 0
-    assert res.ratio("b", "a") == pytest.approx(0.5)
+    assert res.row_totals == {"a": 1, "b": 1}
+    assert res.ratio("a", "b") == pytest.approx(1.0)
+    _assert_rows_sum_to_one(res)
 
 
 def test_single_file_scope(tmp_path):
@@ -97,12 +112,15 @@ def test_single_file_scope(tmp_path):
         },
     )
     res = transition_matrix(project, corpus, ["G"], scope_file=tmp_path / "f1.eaf")
-    assert res.label_totals == {"a": 1, "b": 1}
-    assert res.count("b", "a") == 1
+    assert res.count("a", "b") == 1
+    assert res.row_totals == {"a": 1, "b": 0}
+    assert res.ratio("a", "b") == pytest.approx(1.0)
+    assert res.ratio("b", "a") is None  # b only ends the sequence -> empty row
+    _assert_rows_sum_to_one(res)
+
     res2 = transition_matrix(project, corpus, ["G"], scope_file=tmp_path / "f2.eaf")
-    assert res2.label_totals == {"a": 1, "b": 0}
-    assert res2.transition_total == 0
-    assert res2.ratio("b", "a") is None  # b never occurs in f2
+    assert res2.transition_total == 0  # single annotation -> no transition
+    assert res2.ratio("a", "b") is None
 
 
 def test_cross_tier_union_and_merge(tmp_path):
@@ -122,10 +140,12 @@ def test_cross_tier_union_and_merge(tmp_path):
     )
     res = transition_matrix(project, corpus, ["G", "H"])
     assert res.row_labels == ["a", "c", "x"]  # union in selection order
-    assert res.count("x", "a") == 1  # x right after a (cross-tier)
-    assert res.count("c", "x") == 1  # c right after x (cross-tier)
-    assert res.count("c", "a") == 0  # a and c are NOT adjacent (x in between)
-    assert res.ratio("x", "a") == pytest.approx(1.0)
+    assert res.count("a", "x") == 1  # a -> x (cross-tier)
+    assert res.count("x", "c") == 1  # x -> c (cross-tier)
+    assert res.count("a", "c") == 0  # a and c are NOT adjacent (x in between)
+    assert res.ratio("a", "x") == pytest.approx(1.0)
+    assert res.ratio("x", "c") == pytest.approx(1.0)
+    _assert_rows_sum_to_one(res)
 
 
 def test_out_of_dictionary_is_skipped_transparently(tmp_path):
@@ -142,7 +162,8 @@ def test_out_of_dictionary_is_skipped_transparently(tmp_path):
     )
     res = transition_matrix(project, corpus, ["G"])
     # the typo is invisible: a and b become adjacent
-    assert res.count("b", "a") == 1
+    assert res.count("a", "b") == 1
+    assert res.ratio("a", "b") == pytest.approx(1.0)
     assert res.annotations_considered == 2
 
 
@@ -159,10 +180,13 @@ def test_case_insensitive_folding(tmp_path):
         },
     )
     sensitive = transition_matrix(project, corpus, ["G"])
-    assert sensitive.label_totals == {"Point": 1}  # lowercase variant is OOD
+    # lowercase "point" is out-of-dictionary -> only one element, no transition
+    assert sensitive.annotations_considered == 1
+    assert sensitive.transition_total == 0
     insensitive = transition_matrix(project, corpus, ["G"], case_sensitive=False)
-    assert insensitive.label_totals == {"Point": 2}
+    assert insensitive.annotations_considered == 2
     assert insensitive.count("Point", "Point") == 1
+    assert insensitive.ratio("Point", "Point") == pytest.approx(1.0)
 
 
 def test_missing_tier_and_empty_selection(tmp_path):
@@ -198,18 +222,18 @@ def test_tier_to_tier_next_target(tmp_path):
         },
     )
     res = tier_to_tier_matrix(project, corpus, "S", "T")
-    assert res.col_labels == ["j1", "j2"]  # source dictionary = columns (j)
-    assert res.row_labels == ["i1", "i2"]  # target dictionary = rows (i)
-    assert res.count("i1", "j1") == 1  # next target after j1@0 is i1@500
-    assert res.count("i2", "j2") == 1  # next target after j2@1000 is i2@1500
-    assert res.count("i2", "j1") == 0
-    assert res.label_totals == {"i1": 1, "i2": 1}
-    assert res.ratio("i1", "j1") == pytest.approx(1.0)
+    assert res.row_labels == ["j1", "j2"]  # source dictionary = rows (from)
+    assert res.col_labels == ["i1", "i2"]  # target dictionary = columns (to)
+    assert res.count("j1", "i1") == 1  # next target after j1@0 is i1@500
+    assert res.count("j2", "i2") == 1  # next target after j2@1000 is i2@1500
+    assert res.count("j1", "i2") == 0
+    assert res.row_totals == {"j1": 1, "j2": 1}
+    assert res.ratio("j1", "i1") == pytest.approx(1.0)
+    _assert_rows_sum_to_one(res)
 
 
 def test_tier_to_tier_shared_target_and_simultaneous_start(tmp_path):
-    # two sources both map onto the SAME next target -> the i-row sums above 1;
-    # a target starting at the same time as a source is NOT "next" (strictly later)
+    # two sources map onto the SAME next target; each source row still sums to 1
     project, corpus = _project_with(
         tmp_path,
         {
@@ -224,16 +248,16 @@ def test_tier_to_tier_shared_target_and_simultaneous_start(tmp_path):
         },
     )
     res = tier_to_tier_matrix(project, corpus, "S", "T")
-    assert res.count("i", "j1") == 1
-    assert res.count("i", "j2") == 1
-    assert res.label_totals == {"i": 1}
-    # both ratios are 1/1: rows may sum to more than 1 in this mode
-    assert res.ratio("i", "j1") == pytest.approx(1.0)
-    assert res.ratio("i", "j2") == pytest.approx(1.0)
-    # source j1@500 has no later target -> no transition
+    # j1@0 -> i, j2@100 -> i; j1@500 has no later target -> no transition
+    assert res.count("j1", "i") == 1
+    assert res.count("j2", "i") == 1
+    assert res.row_totals == {"j1": 1, "j2": 1}
+    assert res.ratio("j1", "i") == pytest.approx(1.0)
+    assert res.ratio("j2", "i") == pytest.approx(1.0)
+    _assert_rows_sum_to_one(res)
     assert res.transition_total == 2
 
-    # simultaneous start is not "after"
+    # a target starting at the same time as a source is NOT "after"
     project2, corpus2 = _project_with(
         tmp_path,
         {
@@ -266,7 +290,7 @@ def test_tier_to_tier_scope_and_missing_tier(tmp_path):
         },
     )
     full = tier_to_tier_matrix(project, corpus, "S", "T")
-    assert full.count("i", "j") == 1
+    assert full.count("j", "i") == 1
     only_f2 = tier_to_tier_matrix(project, corpus, "S", "T", scope_file=tmp_path / "f2.eaf")
     assert only_f2.transition_total == 0
 
@@ -286,7 +310,7 @@ def _term_query(tier, label, distance=10000):
 
 def test_compound_transitions_simple(tmp_path):
     # A-instances at 0 and 2000 (tier T1), B-instance at 1000 (tier T2):
-    # sequence A, B, A -> (B after A)=1, (A after B)=1; totals A=2, B=1
+    # sequence A, B, A -> A->B, B->A; the trailing A has no successor
     project, corpus = _project_with(
         tmp_path,
         {
@@ -301,11 +325,12 @@ def test_compound_transitions_simple(tmp_path):
     queries = {"A": _term_query("T1", "a"), "B": _term_query("T2", "b")}
     res = compound_transition_matrix(project, corpus, queries)
     assert res.row_labels == ["A", "B"]
-    assert res.label_totals == {"A": 2, "B": 1}
-    assert res.count("B", "A") == 1
     assert res.count("A", "B") == 1
+    assert res.count("B", "A") == 1
+    assert res.row_totals == {"A": 1, "B": 1}
+    assert res.ratio("A", "B") == pytest.approx(1.0)
     assert res.ratio("B", "A") == pytest.approx(1.0)
-    assert res.ratio("A", "B") == pytest.approx(0.5)
+    _assert_rows_sum_to_one(res)
 
 
 def test_compound_transitions_with_and_compound(tmp_path):
@@ -328,9 +353,11 @@ def test_compound_transitions_with_and_compound(tmp_path):
     )
     queries = {"A": compound_a, "B": _term_query("T3", "b")}
     res = compound_transition_matrix(project, corpus, queries)
-    assert res.label_totals == {"A": 1, "B": 1}
-    assert res.count("B", "A") == 1  # B@2000 follows the A-instance starting at 0
-    assert res.ratio("B", "A") == pytest.approx(1.0)
+    assert res.count("A", "B") == 1  # the A-instance (start 0) is followed by B@2000
+    assert res.row_totals == {"A": 1, "B": 0}
+    assert res.ratio("A", "B") == pytest.approx(1.0)
+    assert res.ratio("B", "A") is None  # B never has a successor
+    _assert_rows_sum_to_one(res)
 
 
 def test_compound_transitions_scope_and_validation(tmp_path):
@@ -343,11 +370,10 @@ def test_compound_transitions_scope_and_validation(tmp_path):
     )
     queries = {"A": _term_query("T1", "a"), "B": _term_query("T2", "b")}
     full = compound_transition_matrix(project, corpus, queries)
-    assert full.count("B", "A") == 1  # only inside f1; no cross-file transition
+    assert full.count("A", "B") == 1  # only inside f1; no cross-file transition
     only_f2 = compound_transition_matrix(
         project, corpus, queries, scope_file=tmp_path / "f2.eaf"
     )
-    assert only_f2.label_totals == {"A": 1, "B": 0}
     assert only_f2.transition_total == 0
     with pytest.raises(ValueError):
         compound_transition_matrix(project, corpus, {})
@@ -366,10 +392,12 @@ def test_compound_transitions_with_free_variable_expansion(tmp_path):
     queries = {"A": Query(Group("AND", [Term("G", "", free=True)]), max_distance_ms=1000)}
     res = compound_transition_matrix(project, corpus, queries)
     assert res.row_labels == ["A[a]", "A[b]"]
-    assert res.label_totals == {"A[a]": 2, "A[b]": 1}
-    assert res.count("A[b]", "A[a]") == 1
+    # sequence A[a], A[b], A[a]: A[a]->A[b], A[b]->A[a]; trailing A[a] excluded
     assert res.count("A[a]", "A[b]") == 1
-    assert res.ratio("A[a]", "A[b]") == pytest.approx(0.5)
+    assert res.count("A[b]", "A[a]") == 1
+    assert res.row_totals == {"A[a]": 1, "A[b]": 1}
+    assert res.ratio("A[a]", "A[b]") == pytest.approx(1.0)
+    _assert_rows_sum_to_one(res)
 
 
 def test_compound_transitions_free_variable_with_fixed_terms(tmp_path):
@@ -393,6 +421,8 @@ def test_compound_transitions_free_variable_with_fixed_terms(tmp_path):
     res = compound_transition_matrix(project, corpus, queries)
     # sequence: A[x]@0, B@1500, A[y]@3000
     assert res.row_labels == ["A[x]", "A[y]", "B"]
-    assert res.count("B", "A[x]") == 1
-    assert res.count("A[y]", "B") == 1
-    assert res.ratio("A[y]", "B") == pytest.approx(1.0)
+    assert res.count("A[x]", "B") == 1
+    assert res.count("B", "A[y]") == 1
+    assert res.ratio("A[x]", "B") == pytest.approx(1.0)
+    assert res.ratio("B", "A[y]") == pytest.approx(1.0)
+    _assert_rows_sum_to_one(res)

@@ -1,25 +1,24 @@
 """Transition matrices over dictionary tiers, in three modes (PLAN.md section 9).
 
-All modes share the cell definition: cell *(i, j)* = how often element *i*
-appeared immediately after element *j*, divided by the number of all instances
-of element *i* (so the row header carries the denominator).
+All modes produce a **row-stochastic** matrix: cell *(i, j)* = how often element
+*i* is immediately followed by element *j*, divided by the number of transitions
+*out of* *i* (i.e. the occurrences of *i* that have a successor).  Each row
+therefore sums to 1; a row is empty (every cell ``None``) when its element never
+has a successor - e.g. a label that only ever ends a sequence.
 
 * :func:`transition_matrix` - **merged sequence**: the annotations of the
   selected tiers are merged into one sequence ordered by start time; elements
   are the labels of the union dictionary (cross-tier transitions possible).
-* :func:`tier_to_tier_matrix` - **tier to tier**: for every annotation on the
-  source tier (label *j*), the *next* annotation on the target tier - the first
-  one starting strictly later - is looked up (label *i*).  Rows are the target
-  dictionary, columns the source dictionary; rows can sum to more than 1
-  because several source annotations may share the same next target.
+* :func:`tier_to_tier_matrix` - **tier to tier**: rows are the *source* tier
+  labels, columns the *target* tier labels; for every source annotation its
+  next target annotation (first one starting strictly later) is the successor.
 * :func:`compound_transition_matrix` - **compound to compound**: elements are
   instances of named compounds found by the query engine (AND / OR / NOT plus
-  max distance, see :mod:`cclc.core.query`); instances are ordered by their
-  start time per file.
+  max distance, see :mod:`cclc.core.query`); instances are ordered by start time.
 
 Out-of-dictionary values, empty values and untimed annotations are skipped
 transparently.  Sequences never cross file boundaries; corpus scope sums the
-per-file counts before normalising.
+per-file transition counts before normalising.
 """
 
 from __future__ import annotations
@@ -38,32 +37,39 @@ if TYPE_CHECKING:
 
 @dataclass
 class TransitionResult:
-    """Counts and totals backing one transition matrix.
+    """Counts and per-row totals backing one transition matrix.
 
-    ``row_labels`` are the elements *i* (the following element), ``col_labels``
-    the elements *j* (the predecessor); for the merged-sequence mode both are
-    the same union dictionary.
+    ``row_labels`` are the "from" elements *i*, ``col_labels`` the "to" elements
+    *j*; ``counts[(i, j)]`` is the number of ``i -> j`` transitions and
+    ``row_totals[i]`` the number of transitions out of *i* (the row denominator).
+    For the merged-sequence and compound modes the row and column labels are the
+    same set.
     """
 
     row_labels: list[str]
     col_labels: list[str]
-    counts: dict[tuple[str, str], int] = field(default_factory=dict)  # (i, j)
-    label_totals: dict[str, int] = field(default_factory=dict)  # totals of i
+    counts: dict[tuple[str, str], int] = field(default_factory=dict)  # (i, j) = i->j
+    row_totals: dict[str, int] = field(default_factory=dict)  # transitions out of i
     annotations_considered: int = 0
 
-    def count(self, label_i: str, label_j: str) -> int:
-        """Raw count: how often ``label_i`` appeared right after ``label_j``."""
-        return self.counts.get((label_i, label_j), 0)
+    def record(self, from_label: str, to_label: str) -> None:
+        self.counts[(from_label, to_label)] = self.counts.get((from_label, to_label), 0) + 1
+        self.row_totals[from_label] = self.row_totals.get(from_label, 0) + 1
 
-    def ratio(self, label_i: str, label_j: str) -> float | None:
-        """``count(i, j)`` divided by all instances of ``label_i``.
+    def count(self, from_label: str, to_label: str) -> int:
+        """Raw count of ``from_label -> to_label`` transitions."""
+        return self.counts.get((from_label, to_label), 0)
 
-        ``None`` when ``label_i`` never occurs (the ratio is undefined).
+    def ratio(self, from_label: str, to_label: str) -> float | None:
+        """Probability of ``to_label`` immediately following ``from_label``.
+
+        ``count(i, j)`` divided by the transitions out of *i*; ``None`` when *i*
+        never has a successor (the whole row is then undefined).
         """
-        total = self.label_totals.get(label_i, 0)
+        total = self.row_totals.get(from_label, 0)
         if total == 0:
             return None
-        return self.count(label_i, label_j) / total
+        return self.count(from_label, to_label) / total
 
     @property
     def transition_total(self) -> int:
@@ -100,6 +106,13 @@ def _scope_files(corpus: Corpus, scope_file: Path | None) -> list[Path]:
     return [scope_file] if scope_file is not None else list(corpus.files)
 
 
+def _record_sequence(result: TransitionResult, sequence: list[str]) -> None:
+    """Count consecutive transitions in one file's element sequence."""
+    result.annotations_considered += len(sequence)
+    for previous, current in zip(sequence, sequence[1:], strict=False):
+        result.record(previous, current)
+
+
 def transition_matrix(
     project: CorpusProject,
     corpus: Corpus,
@@ -130,7 +143,7 @@ def transition_matrix(
 
     result = TransitionResult(row_labels=labels, col_labels=labels)
     for label in labels:
-        result.label_totals[label] = 0
+        result.row_totals[label] = 0
 
     for path in _scope_files(corpus, scope_file):
         doc = project.document(path)
@@ -138,15 +151,7 @@ def transition_matrix(
         for tier in tier_names:
             merged.extend(_sequence(doc, tier, norm_to_canonical, case_sensitive))
         merged.sort(key=lambda item: (item[0], item[1]))
-
-        previous: str | None = None
-        for _, _, label in merged:
-            result.label_totals[label] += 1
-            result.annotations_considered += 1
-            if previous is not None:
-                key = (label, previous)
-                result.counts[key] = result.counts.get(key, 0) + 1
-            previous = label
+        _record_sequence(result, [label for _, _, label in merged])
     return result
 
 
@@ -158,34 +163,30 @@ def tier_to_tier_matrix(
     scope_file: Path | None = None,
     case_sensitive: bool = True,
 ) -> TransitionResult:
-    """Tier-to-tier mode: from each source annotation to the next target one.
+    """Tier-to-tier mode: from each source annotation to its next target one.
 
-    For every annotation with label *j* on ``source_tier``, the first
-    annotation on ``target_tier`` whose start time is **strictly later** is the
-    transition target (label *i*).  Cell (i, j) is normalised by all instances
-    of label *i* on the target tier; rows can therefore sum to more than 1 when
-    several source annotations share the same next target annotation.
+    Rows are the ``source_tier`` labels (the "from"), columns the ``target_tier``
+    labels (the "to").  For every annotation with label *i* on the source tier,
+    the first annotation on the target tier whose start time is **strictly
+    later** is its successor *j*.  Each row sums to 1; a source annotation with
+    no later target on the target tier contributes no transition.
     """
     for tier in dict.fromkeys((source_tier, target_tier)):
         require_tier_everywhere(project, corpus, tier)
-    col_labels = union_dictionary(project, corpus, source_tier)
-    row_labels = union_dictionary(project, corpus, target_tier)
-    col_norm = {_norm(label, case_sensitive): label for label in col_labels}
-    row_norm = {_norm(label, case_sensitive): label for label in row_labels}
+    row_labels = union_dictionary(project, corpus, source_tier)
+    col_labels = union_dictionary(project, corpus, target_tier)
+    source_norm = {_norm(label, case_sensitive): label for label in row_labels}
+    target_norm = {_norm(label, case_sensitive): label for label in col_labels}
 
     result = TransitionResult(row_labels=row_labels, col_labels=col_labels)
     for label in row_labels:
-        result.label_totals[label] = 0
+        result.row_totals[label] = 0
 
     for path in _scope_files(corpus, scope_file):
         doc = project.document(path)
-        sources = _sequence(doc, source_tier, col_norm, case_sensitive)
-        targets = _sequence(doc, target_tier, row_norm, case_sensitive)
-
-        for _, _, label in targets:
-            result.label_totals[label] += 1
-            result.annotations_considered += 1
-        result.annotations_considered += len(sources)
+        sources = _sequence(doc, source_tier, source_norm, case_sensitive)
+        targets = _sequence(doc, target_tier, target_norm, case_sensitive)
+        result.annotations_considered += len(sources) + len(targets)
 
         # Both lists are start-ordered: advance a single pointer per source.
         index = 0
@@ -193,8 +194,7 @@ def tier_to_tier_matrix(
             while index < len(targets) and targets[index][0] <= s_start:
                 index += 1
             if index < len(targets):
-                key = (targets[index][2], s_label)
-                result.counts[key] = result.counts.get(key, 0) + 1
+                result.record(s_label, targets[index][2])
     return result
 
 
@@ -209,8 +209,8 @@ def compound_transition_matrix(
     ``queries`` maps a compound name to a query expression; instances are found
     with the query engine, anchored at their start time, merged per file into
     one sequence (ties ordered by end time, then name) and cell (i, j) counts
-    how often an instance of compound *i* immediately follows an instance of
-    compound *j*, divided by all instances of *i*.
+    how often an instance of compound *i* is immediately followed by an instance
+    of compound *j*, divided by the transitions out of *i*.
 
     A compound containing **free (ALL) terms** is expanded by its bindings:
     every instance becomes an element named ``name[label, ...]`` with the labels
@@ -248,16 +248,9 @@ def compound_transition_matrix(
     names = list(elements)
     result = TransitionResult(row_labels=names, col_labels=names)
     for name in names:
-        result.label_totals[name] = 0
+        result.row_totals[name] = 0
 
     for events in events_per_file.values():
         events.sort(key=lambda item: (item[0], item[1], item[2]))
-        previous: str | None = None
-        for _, _, name in events:
-            result.label_totals[name] += 1
-            result.annotations_considered += 1
-            if previous is not None:
-                key = (name, previous)
-                result.counts[key] = result.counts.get(key, 0) + 1
-            previous = name
+        _record_sequence(result, [name for _, _, name in events])
     return result

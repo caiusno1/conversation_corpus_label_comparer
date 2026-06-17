@@ -142,7 +142,8 @@ def test_transitions_view_matrix(app, tmp_path):
     assert view.corpus_combo.currentText() == "C"
     assert view._selected_tiers() == ["G"]  # first tier checked by default
 
-    # whole corpus: totals a=3, b=1; transitions: (b after a)=1, (a after b)=1
+    # whole corpus, forward & row-stochastic. Sequence f1: a,b,a (trailing a has
+    # no successor); f2: a alone. Transitions a->b and b->a, each once.
     headers = [
         view.table.horizontalHeaderItem(c).text()
         for c in range(view.table.columnCount())
@@ -151,20 +152,23 @@ def test_transitions_view_matrix(app, tmp_path):
     row_headers = [
         view.table.verticalHeaderItem(r).text() for r in range(view.table.rowCount())
     ]
-    assert row_headers == ["a  (n=3)", "b  (n=1)"]
-    assert view.table.item(0, 1).text() == "0.333"  # a after b: 1/3
-    assert view.table.item(1, 0).text() == "1.000"  # b after a: 1/1
-    assert view.table.item(0, 0).text() == "0.000"  # a after a: 0/3
+    # n = transitions OUT of the label (the row denominator), not occurrences
+    assert row_headers == ["a  (n=1)", "b  (n=1)"]
+    assert view.table.item(0, 1).text() == "1.000"  # a -> b
+    assert view.table.item(1, 0).text() == "1.000"  # b -> a
+    assert view.table.item(0, 0).text() == "0.000"  # a -> a
+    # row a is stochastic: 0.000 + 1.000 == 1
+    assert float(view.table.item(0, 0).text()) + float(view.table.item(0, 1).text()) == 1.0
 
-    # raw counts toggle
+    # raw counts toggle shows the numerator
     view.raw_check.setChecked(True)
     assert view.table.item(0, 1).text() == "1"
     view.raw_check.setChecked(False)
 
-    # single-file scope: f2 has one a, no transitions, b never occurs
+    # single-file scope: f2 has one a, no transitions -> every row empty ("—")
     idx = view.scope_combo.findText("f2.eaf")
     view.scope_combo.setCurrentIndex(idx)
-    assert view.table.item(1, 0).text() == "—"  # ratio undefined for b
+    assert view.table.item(0, 1).text() == "—"  # a has no successor in f2
     assert "0 transitions" in view.summary.text()
 
 
@@ -186,7 +190,7 @@ def test_transitions_view_tier_to_tier_and_compound_modes(app, tmp_path):
     tabs = window.centralWidget()
     view = tabs.widget(3)
 
-    # --- mode 2: tier -> tier ---
+    # --- mode 2: tier -> tier (rows = source "from", columns = target "to") ---
     view.mode_combo.setCurrentIndex(1)
     view.source_tier_combo.setCurrentText("S")
     view.target_tier_combo.setCurrentText("T")
@@ -195,10 +199,10 @@ def test_transitions_view_tier_to_tier_and_compound_modes(app, tmp_path):
         for c in range(view.table.columnCount())
     ]
     rows = [view.table.verticalHeaderItem(r).text() for r in range(view.table.rowCount())]
-    assert cols == ["j1", "j2"]  # source dictionary = columns
-    assert rows == ["i1  (n=1)", "i2  (n=1)"]  # target dictionary = rows
-    assert view.table.item(0, 0).text() == "1.000"  # i1 after j1
-    assert view.table.item(1, 1).text() == "1.000"  # i2 after j2
+    assert cols == ["i1", "i2"]  # target dictionary = columns (to)
+    assert rows == ["j1  (n=1)", "j2  (n=1)"]  # source dictionary = rows (from)
+    assert view.table.item(0, 0).text() == "1.000"  # j1 -> next target i1
+    assert view.table.item(1, 1).text() == "1.000"  # j2 -> next target i2
     assert view.table.item(1, 0).text() == "0.000"
 
     # --- mode 3: compound -> compound ---
@@ -209,9 +213,9 @@ def test_transitions_view_tier_to_tier_and_compound_modes(app, tmp_path):
     view.distance.setValue(10000)
     view._run_compounds()
     rows = [view.table.verticalHeaderItem(r).text() for r in range(view.table.rowCount())]
-    assert rows == ["A  (n=1)", "B  (n=1)"]
-    # sequence: A(j1@0), B(i1@500) -> B after A = 1/1
-    assert view.table.item(1, 0).text() == "1.000"
+    assert rows == ["A  (n=1)", "B  (n=0)"]  # B has no successor
+    # sequence: A(j1@0) -> B(i1@500); row A, col B
+    assert view.table.item(0, 1).text() == "1.000"
     assert "2 instances, 1 transitions" in view.summary.text()
 
 
@@ -233,5 +237,7 @@ def test_transitions_compound_mode_with_free_variable(app, tmp_path):
     view.distance.setValue(1000)
     view._run_compounds()
     rows = [view.table.verticalHeaderItem(r).text() for r in range(view.table.rowCount())]
-    # A expands by its free-variable bindings; B stays plain
-    assert rows == ["A[a]  (n=2)", "A[b]  (n=1)", "B  (n=2)"]
+    # A expands by its free-variable bindings; B stays plain. n = transitions out:
+    # A[a] occurs twice and is followed both times, A[b] once, B once (the trailing
+    # B has no successor).
+    assert rows == ["A[a]  (n=2)", "A[b]  (n=1)", "B  (n=1)"]

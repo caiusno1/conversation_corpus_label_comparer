@@ -22,12 +22,13 @@ Five views (tabs):
    sliders *and* exact millisecond fields, kept in sync) and see, per file, the
    count of every dictionary label annotated within that window, plus the
    dictionary coverage restricted to the interval. CSV export.
-4. **Transitions** — transition matrices per file or for the whole corpus:
-   cell (i, j) shows how often element i appeared immediately after element j,
-   divided by all instances of element i. Three modes: *merged sequence*
-   (several tiers combined via the union of their dictionaries), *tier → tier*
-   (from each source-tier annotation to the next annotation on a target tier),
-   and *compound → compound* (two compounds defined with the AND/OR/NOT query
+4. **Transitions** — row-stochastic transition matrices per file or for the
+   whole corpus: cell (i, j) is the probability that element i is immediately
+   followed by element j (count of i→j divided by the transitions out of i), so
+   every row sums to 1. Three modes: *merged sequence* (several tiers combined
+   via the union of their dictionaries), *tier → tier* (rows = a source tier's
+   labels, columns = the next annotation's label on a target tier), and
+   *compound → compound* (two compounds defined with the AND/OR/NOT query
    builder; an `ALL <tier>` free-variable term matches any label in range and
    expands the matrix by the bound labels, e.g. `A[nod]`, `A[shake]`).
    Raw-count toggle and CSV export.

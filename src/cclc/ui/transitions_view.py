@@ -43,23 +43,24 @@ from .query_builder import QueryBuilderWidget
 
 DEFINITIONS = {
     "merged": (
-        "Cell (row i, column j): how often label i appeared immediately after "
-        "label j in the merged sequence of the checked tiers, divided by all "
-        "instances of label i. Several tiers use the union of their dictionaries."
+        "Cell (row i, column j): probability that label i is immediately followed "
+        "by label j — count(i→j) divided by the number of transitions out of i. "
+        "Each row sums to 1 (a label that only ever ends a file shows an empty "
+        "row, “—”). Several tiers use the union of their dictionaries."
     ),
     "tier2tier": (
-        "Cell (row i, column j): how often an annotation with label i on the "
-        "target tier is the NEXT target-tier annotation (strictly later start) "
-        "after an annotation with label j on the source tier, divided by all "
-        "instances of label i on the target tier. Rows can sum to more than 1 "
-        "when several source annotations share the same next target."
+        "Cell (row i, column j): for each annotation with label i on the source "
+        "tier, its NEXT annotation on the target tier (the first one starting "
+        "strictly later) is the successor j. The value is the share of source-i "
+        "annotations whose next target is j, so each row sums to 1. A source "
+        "annotation with no later target contributes nothing."
     ),
     "compound": (
-        "Define compounds A and B (AND/OR/NOT + max distance, as in the Query "
-        "view; the case toggle does not apply here). Their instances are ordered "
-        "by start time per file, and cell (row i, column j) shows how often an "
-        "instance of compound i immediately follows an instance of compound j, "
-        "divided by all instances of i. Press “Run compounds” to compute."
+        "Cell (row i, column j): probability that an instance of compound i is "
+        "immediately followed by an instance of compound j, divided by the "
+        "transitions out of i; each row sums to 1. Define compounds A and B "
+        "(AND/OR/NOT + max distance, as in the Query view; the case toggle does "
+        "not apply here). Press “Run compounds” to compute."
     ),
 }
 
@@ -115,9 +116,9 @@ class TransitionsView(QWidget):
         t2t_layout.setContentsMargins(0, 0, 0, 0)
         self.source_tier_combo = QComboBox()
         self.target_tier_combo = QComboBox()
-        t2t_layout.addWidget(QLabel("From tier (columns j):"))
+        t2t_layout.addWidget(QLabel("From tier (rows):"))
         t2t_layout.addWidget(self.source_tier_combo)
-        t2t_layout.addWidget(QLabel("To tier (rows i):"))
+        t2t_layout.addWidget(QLabel("To tier (columns):"))
         t2t_layout.addWidget(self.target_tier_combo)
         t2t_layout.addStretch(1)
         self.stack.addWidget(t2t_page)
@@ -390,7 +391,7 @@ class TransitionsView(QWidget):
         self.table.setHorizontalHeaderLabels(result.col_labels)
         self.table.setVerticalHeaderLabels(
             [
-                f"{label}  (n={result.label_totals.get(label, 0)})"
+                f"{label}  (n={result.row_totals.get(label, 0)})"
                 for label in result.row_labels
             ]
         )
