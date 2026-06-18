@@ -20,6 +20,9 @@ dev = [
     "pytest-qt>=4",
     "ruff>=0.1",
 ]
+build = [
+    "pyinstaller>=6.0",
+]
 
 [project.gui-scripts]
 cclc = "cclc.main:main"

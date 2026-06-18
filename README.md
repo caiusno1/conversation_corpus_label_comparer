@@ -112,6 +112,51 @@ Quick check that Qt loads correctly in your environment:
 python -c "from PySide6 import QtWidgets; print('ok')"
 ```
 
+## Standalone Windows installer
+
+For end users who don't want to install Python at all, the app can be shipped as
+a **self-contained Windows installer**. The build bundles its own private Python
+interpreter and Qt, so there is nothing to install beforehand and no conflict
+with any Python already on the machine (it also avoids the Anaconda DLL clash
+described under [Troubleshooting](#troubleshooting)).
+
+The installer is produced with **PyInstaller** (one-folder mode, which keeps the
+Qt libraries as separate, replaceable files — required for LGPL compliance, see
+[Licensing](#licensing)) wrapped in an **Inno Setup** installer. A Windows `.exe`
+must be built on Windows; there are two ways to get it:
+
+### Get it from CI (no local setup)
+
+The [`Build Windows installer`](.github/workflows/build-windows.yml) GitHub
+Actions workflow builds everything on a Windows runner. Trigger it from the
+repository's **Actions** tab ("Run workflow"), or push a `v*` tag, then download
+`ELAN-Corpus-Label-Comparer-Setup` from the run's artifacts (a tag also attaches
+the installer to the GitHub release). Run the downloaded `…-Setup.exe` — it
+installs per user (no administrator rights), adds a Start Menu entry, and
+registers an uninstaller.
+
+### Build it locally on Windows
+
+Requires a python.org Python (the `py` launcher) and, for the installer step,
+[Inno Setup](https://jrsoftware.org/isdl.php):
+
+```powershell
+# from the repository root
+powershell -ExecutionPolicy Bypass -File packaging\build_windows.ps1
+```
+
+This produces:
+
+- `dist\ELAN Corpus Label Comparer\` — a portable one-folder app (run the
+  `.exe` inside directly, or copy the folder anywhere), and
+- `dist-installer\ELAN-Corpus-Label-Comparer-Setup.exe` — the installer (only if
+  Inno Setup is installed).
+
+To freeze the app without the installer step, just run
+`pyinstaller packaging/cclc.spec` in an environment where the project and its
+`build` extra are installed (`pip install -e ".[build]"`). The same spec works on
+macOS and Linux to produce a self-contained app for those platforms.
+
 ## Development
 
 The analysis core (`src/cclc/core/`) is pure Python with no Qt dependency and is

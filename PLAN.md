@@ -469,7 +469,8 @@ Common to all modes:
 | 9 | View 4 | interval label counts with slidable/enterable bounds, interval-restricted coverage |
 | 10 | View 5 | transition matrices in three modes (merged sequence, tier→tier, compound→compound), raw-count toggle |
 | 11 | Polish | project save/load (incl. saved queries), CSV export, background parsing/caching, error reporting |
-| 12 | (Stretch) | Ctrl+drag copy, multi-label selection, bar chart (matplotlib), "open in ELAN", PyInstaller build (one-folder mode, see §3.1) |
+| 12 | Packaging | self-contained Windows installer — PyInstaller one-folder build (§3.1) wrapped in Inno Setup, plus a CI workflow that produces it (`packaging/`, `.github/workflows/build-windows.yml`) |
+| 13 | (Stretch) | Ctrl+drag copy, multi-label selection, bar chart (matplotlib), "open in ELAN" |
 
 Milestones 2–3, 7 and the core parts of 9–10 are pure-Python and reviewable independently of
 any UI work.

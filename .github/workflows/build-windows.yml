@@ -1,0 +1,56 @@
+name: Build Windows installer
+
+# Builds the self-contained Windows app and a single-file installer. Run it
+# manually from the Actions tab (workflow_dispatch) or by pushing a v* tag; the
+# installer is uploaded as a downloadable artifact (and attached to the release
+# when triggered by a tag). Nothing needs to be installed locally.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the app and PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[build]"
+
+      - name: Freeze the app (PyInstaller, one-folder)
+        run: pyinstaller --noconfirm packaging/cclc.spec
+
+      - name: Build the installer (Inno Setup)
+        run: |
+          choco install innosetup --no-progress -y
+          & "$Env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" packaging\installer.iss
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ELAN-Corpus-Label-Comparer-Setup
+          path: dist-installer/*.exe
+
+      - name: Upload portable build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ELAN-Corpus-Label-Comparer-portable
+          path: dist/ELAN Corpus Label Comparer
+
+      - name: Attach installer to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-installer/*.exe
