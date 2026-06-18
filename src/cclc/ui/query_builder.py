@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QTreeWidget,
@@ -27,7 +28,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from cclc.core.query import RELATIONS, Group, Term
+from cclc.core.query import (
+    RELATIONS,
+    Group,
+    QueryParseError,
+    Term,
+    parse_query,
+    to_query_string,
+)
 
 NODE_ROLE = Qt.UserRole + 1
 
@@ -120,6 +128,24 @@ class QueryBuilderWidget(QWidget):
         btn_row.addStretch(1)
         layout.addLayout(btn_row)
 
+        # Textual entry with brackets, kept in sync with the tree.
+        text_row = QHBoxLayout()
+        self.text_input = QLineEdit()
+        self.text_input.setPlaceholderText('e.g.  A = "point" AND (B = nod OR B = shake)')
+        self.text_input.returnPressed.connect(self._apply_text)
+        apply_btn = QPushButton("Apply text")
+        apply_btn.clicked.connect(self._apply_text)
+        text_row.addWidget(QLabel("Text:"))
+        text_row.addWidget(self.text_input, 1)
+        text_row.addWidget(apply_btn)
+        layout.addLayout(text_row)
+        self.parse_error = QLabel("")
+        self.parse_error.setStyleSheet("color: #b00;")
+        layout.addWidget(self.parse_error)
+
+        # Reflect tree edits back into the text field (the canonical form).
+        self.changed.connect(self._sync_text_from_tree)
+
         self.reset()
 
     # --- tree management -------------------------------------------------------
@@ -134,6 +160,62 @@ class QueryBuilderWidget(QWidget):
         self.refresh_item_label(root)
         root.setExpanded(True)
         self.changed.emit()
+
+    def load_group(self, group: Group) -> None:
+        """Rebuild the tree from a parsed AST (used by the text input)."""
+        self.tree.clear()
+        root = QTreeWidgetItem()
+        root.setData(
+            0,
+            NODE_ROLE,
+            {"kind": "group", "op": group.op, "negated": group.negated, "relation": group.relation},
+        )
+        self.tree.addTopLevelItem(root)
+        for child in group.children:
+            self._add_node_item(root, child)
+        self.refresh_item_label(root)
+        root.setExpanded(True)
+        self.changed.emit()
+
+    def _add_node_item(self, parent: QTreeWidgetItem, node) -> None:
+        item = QTreeWidgetItem()
+        if isinstance(node, Term):
+            item.setData(0, NODE_ROLE, {"kind": "term", "term": node})
+        else:
+            item.setData(
+                0,
+                NODE_ROLE,
+                {
+                    "kind": "group",
+                    "op": node.op,
+                    "negated": node.negated,
+                    "relation": node.relation,
+                },
+            )
+        parent.addChild(item)
+        self.refresh_item_label(item)
+        if isinstance(node, Group):
+            for child in node.children:
+                self._add_node_item(item, child)
+        item.setExpanded(True)
+
+    def _apply_text(self) -> None:
+        text = self.text_input.text().strip()
+        self.parse_error.setText("")
+        if not text:
+            return
+        try:
+            group = parse_query(text)
+        except QueryParseError as exc:
+            self.parse_error.setText(f"Cannot parse: {exc}")
+            return
+        self.load_group(group)
+
+    def _sync_text_from_tree(self) -> None:
+        if self.tree.topLevelItemCount() == 0:
+            return
+        self.parse_error.setText("")
+        self.text_input.setText(to_query_string(self.root_group()))
 
     def _selected_or_root(self) -> QTreeWidgetItem:
         items = self.tree.selectedItems()

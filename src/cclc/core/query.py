@@ -149,6 +149,204 @@ def free_term_keys(node: Node, negated_ctx: bool = False) -> list[str]:
     return keys
 
 
+# --- textual query syntax (with brackets) -------------------------------------
+
+
+class QueryParseError(Exception):
+    """Raised when a textual query expression cannot be parsed."""
+
+
+_BAREWORD = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-."
+
+
+def _fmt_atom(text: str) -> str:
+    """A tier/label token: bareword if simple, else a double-quoted string."""
+    if text and all(ch in _BAREWORD for ch in text):
+        return text
+    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def to_query_string(node: Node) -> str:
+    """Serialise an AST back to a parseable expression (round-trips with
+    :func:`parse_query`)."""
+    if isinstance(node, Term):
+        if node.free:
+            body = f"ALL {_fmt_atom(node.tier)}"
+        else:
+            body = f"{_fmt_atom(node.tier)} = {_fmt_atom(node.label)}"
+        return f"NOT {body}" if node.negated else body
+
+    joiner = " AND " if node.op == "AND" else " OR "
+    parts = [to_query_string(child) for child in node.children]
+    inner = joiner.join(parts)
+    text = f"({inner})"
+    if node.relation:
+        text += f" [{node.relation}]"
+    return f"NOT {text}" if node.negated else text
+
+
+# Tokeniser: produces (kind, value) tuples. Kinds: WORD, STRING, and the literal
+# punctuation '(', ')', '=', '[', ']'. Keywords are recognised from WORD tokens.
+def _tokenize(text: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch.isspace():
+            i += 1
+        elif ch in "()=[]":
+            tokens.append((ch, ch))
+            i += 1
+        elif ch in "&|!":  # symbol aliases for AND / OR / NOT
+            tokens.append(("WORD", {"&": "AND", "|": "OR", "!": "NOT"}[ch]))
+            i += 1
+        elif ch == '"':
+            i += 1
+            buf = []
+            while i < n and text[i] != '"':
+                if text[i] == "\\" and i + 1 < n:
+                    i += 1
+                buf.append(text[i])
+                i += 1
+            if i >= n:
+                raise QueryParseError("unterminated quoted string")
+            i += 1  # closing quote
+            tokens.append(("STRING", "".join(buf)))
+        elif ch in _BAREWORD:
+            j = i
+            while j < n and text[j] in _BAREWORD:
+                j += 1
+            tokens.append(("WORD", text[i:j]))
+            i = j
+        else:
+            raise QueryParseError(f"unexpected character {ch!r}")
+    return tokens
+
+
+class _Parser:
+    """Recursive-descent parser: OR < AND < NOT < atom, with ( ) grouping."""
+
+    _KEYWORDS = {"AND", "OR", "NOT", "ALL"}
+
+    def __init__(self, tokens: list[tuple[str, str]]):
+        self.tokens = tokens
+        self.pos = 0
+
+    def _peek(self) -> tuple[str, str] | None:
+        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
+
+    def _next(self) -> tuple[str, str]:
+        tok = self._peek()
+        if tok is None:
+            raise QueryParseError("unexpected end of expression")
+        self.pos += 1
+        return tok
+
+    def _at_keyword(self, word: str) -> bool:
+        tok = self._peek()
+        return tok is not None and tok[0] == "WORD" and tok[1].upper() == word
+
+    def parse(self) -> Group:
+        node = self._or()
+        if self._peek() is not None:
+            raise QueryParseError(f"unexpected token {self._peek()[1]!r}")
+        return node if isinstance(node, Group) else Group("AND", [node])
+
+    def _or(self) -> Node:
+        children = [self._and()]
+        while self._at_keyword("OR"):
+            self._next()
+            children.append(self._and())
+        return children[0] if len(children) == 1 else Group("OR", children)
+
+    def _and(self) -> Node:
+        children = [self._not()]
+        while self._at_keyword("AND"):
+            self._next()
+            children.append(self._not())
+        return children[0] if len(children) == 1 else Group("AND", children)
+
+    def _not(self) -> Node:
+        negate = False
+        while self._at_keyword("NOT"):
+            self._next()
+            negate = not negate
+        node = self._atom()
+        if negate:
+            node.negated = not node.negated
+        return node
+
+    def _atom(self) -> Node:
+        tok = self._peek()
+        if tok is None:
+            raise QueryParseError("expected a term or '('")
+        if tok[0] == "(":
+            self._next()
+            node = self._or()
+            closing = self._next()
+            if closing[0] != ")":
+                raise QueryParseError("expected ')'")
+            relation = self._optional_relation()
+            if relation is not None:
+                if isinstance(node, Term) or node.op != "AND":
+                    node = Group("AND", [node])
+                node.relation = relation
+            return node
+        return self._term()
+
+    def _optional_relation(self) -> str | None:
+        if self._peek() is not None and self._peek()[0] == "[":
+            self._next()
+            word = self._next()
+            if word[0] != "WORD" or word[1] not in RELATIONS:
+                raise QueryParseError(f"unknown relation {word[1]!r}")
+            if self._next()[0] != "]":
+                raise QueryParseError("expected ']'")
+            return word[1]
+        return None
+
+    def _value(self) -> str:
+        tok = self._next()
+        if tok[0] == "STRING":
+            return tok[1]
+        if tok[0] == "WORD" and tok[1].upper() not in self._KEYWORDS:
+            return tok[1]
+        raise QueryParseError(f"expected a tier or label, got {tok[1]!r}")
+
+    def _term(self) -> Term:
+        if self._at_keyword("ALL"):
+            self._next()
+            return Term(tier=self._value(), label="", free=True)
+        tier = self._value()
+        eq = self._peek()
+        if eq is None or eq[0] != "=":
+            raise QueryParseError(f"expected '=' after tier {tier!r}")
+        self._next()
+        return Term(tier=tier, label=self._value())
+
+
+def parse_query(text: str) -> Group:
+    """Parse a textual boolean expression into a :class:`Group` AST.
+
+    Grammar (case-insensitive keywords; ``&`` ``|`` ``!`` alias AND/OR/NOT)::
+
+        expr   := or
+        or     := and ( "OR" and )*
+        and    := not ( "AND" not )*
+        not    := "NOT"* atom
+        atom   := "(" expr ")" [ "[" relation "]" ] | term
+        term   := "ALL" name | name "=" name
+        name   := bareword | "quoted string"
+
+    Raises :class:`QueryParseError` on malformed input.
+    """
+    tokens = _tokenize(text)
+    if not tokens:
+        raise QueryParseError("empty expression")
+    return _Parser(tokens).parse()
+
+
 # --- AST helpers --------------------------------------------------------------
 
 
@@ -242,33 +440,60 @@ def evaluate(project: CorpusProject, corpus: Corpus, query: Query) -> list[Insta
     return instances
 
 
-def _evaluate_file(doc: ElanDocument, path: Path, query: Query) -> list[Instance]:
-    # A top-level OR is split so each branch anchors on its own first term.
-    if query.root.op == "OR" and not query.root.negated:
-        out: list[Instance] = []
-        for child in query.root.children:
-            sub = Query(
-                root=child if isinstance(child, Group) else Group("AND", [child]),
-                max_distance_ms=query.max_distance_ms,
-                reference_point=query.reference_point,
-                counting_mode=query.counting_mode,
-            )
-            out.extend(_evaluate_file(doc, path, sub))
-        return _dedupe(out)
+def _to_clauses(node: Node) -> list[list[Node]]:
+    """Distribute the positive AND/OR structure of ``node`` into DNF clauses.
 
-    anchor_term = _first_positive_term(query.root)
+    Returns a list of clauses; each clause is a list of *literals* (positive
+    terms, negated terms or negated groups) whose conjunction is one disjunct of
+    the query.  This lets OR appear at any depth: every disjunct is then
+    evaluated independently with its own anchor, instead of being forced to
+    share the first term's anchor.  Negated nodes are kept atomic (the evaluator
+    defers them), and a positive AND-group carrying an interval relation is also
+    kept atomic so its relation context survives.
+    """
+    if isinstance(node, Term):
+        return [[node]]
+    if node.negated:
+        return [[node]]  # atomic deferred literal
+    if node.op == "AND":
+        if node.relation is not None:
+            return [[node]]  # keep the relation; evaluate the group as one literal
+        clauses: list[list[Node]] = [[]]
+        for child in node.children:
+            child_clauses = _to_clauses(child)
+            clauses = [c + extra for c in clauses for extra in child_clauses]
+        return clauses
+    # positive OR: union of the children's clauses
+    out: list[list[Node]] = []
+    for child in node.children:
+        out.extend(_to_clauses(child))
+    return out
+
+
+def _evaluate_file(doc: ElanDocument, path: Path, query: Query) -> list[Instance]:
+    out: list[Instance] = []
+    for clause in _to_clauses(query.root):
+        out.extend(_evaluate_clause(Group("AND", list(clause)), doc, path, query))
+    return _dedupe(out)
+
+
+def _evaluate_clause(
+    root: Group, doc: ElanDocument, path: Path, query: Query
+) -> list[Instance]:
+    """Evaluate one purely conjunctive clause (anchored on its first term)."""
+    anchor_term = _first_positive_term(root)
     if anchor_term is None:
-        return []
+        return []  # a disjunct with no positive term cannot be anchored
     anchors = _label_annotations(anchor_term, doc)
 
-    n_positive = len(_positive_keys(query.root, False))
+    n_positive = len(_positive_keys(root, False))
     max_span = max(0, n_positive - 1) * query.max_distance_ms
 
     out: list[Instance] = []
     for anchor in anchors:
         seed = {anchor_term.key(): anchor}
         for state, pending, rel_keys in _assignments(
-            query.root, seed, (), frozenset(), doc, query, None, max_span
+            root, seed, (), frozenset(), doc, query, None, max_span
         ):
             chain = [ann for key, ann in state.items() if key not in rel_keys]
             if not _chain_ok(chain, query):
@@ -279,7 +504,7 @@ def _evaluate_file(doc: ElanDocument, path: Path, query: Query) -> list[Instance
             out.append(_make_instance(path, state, query))
             if query.counting_mode == "anchor":
                 break
-    return _dedupe(out)
+    return out
 
 
 def _positive_keys(node: Node, negated_ctx: bool) -> set[str]:

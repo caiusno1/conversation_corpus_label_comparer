@@ -35,7 +35,10 @@ Five views (tabs):
 5. **Query** — build boolean queries (AND / OR / NOT, nestable) over annotation
    labels with a maximum temporal distance (measured at the beginning, midpoint,
    or end of annotations) or an Allen-style interval relation; `ALL <tier>`
-   terms act as free variables matching any label in range. Step through the
+   terms act as free variables matching any label in range. Build the query
+   visually as a tree **or write it directly with brackets** in a text field,
+   e.g. `A = "point" AND (B = nod OR B = shake) AND NOT C = overlap` — the two
+   stay in sync. Step through the
    matched instances one by one in a tier timeline, choose which tiers are
    visible, then feed the selected instances into per-file / corpus statistics
    (with an optional breakdown by label combination). CSV export.

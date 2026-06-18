@@ -337,11 +337,28 @@ one and then handed over to the same descriptive statistics as in View 2.
 - A tree that mirrors the expression: group nodes ("ALL of" / "ANY of") and term rows
   (tier combo + label combo + NOT checkbox); buttons *add term*, *add group*, *delete*;
   drag to re-order or re-nest.
+- **Text entry with brackets:** alongside the tree, a one-line text field accepts the
+  expression written directly with parentheses — `A = "point" AND (B = nod OR B = shake)
+  AND NOT C = overlap`, `ALL Head`, `(A = x AND B = y) [overlaps]` — parsed by
+  `core/query.parse_query` (keywords AND/OR/NOT/ALL, case-insensitive, with `& | !` aliases;
+  OR < AND < NOT precedence; quoted tiers/labels for spaces). Editing the tree updates the
+  text to the canonical form (`core/query.to_query_string`, round-trip tested) and *Apply*
+  parses the text back into the tree; a parse error is shown inline without disturbing the
+  tree. The field is part of the reusable builder, so the Transitions compound mode gets it
+  too.
 - The equivalent readable expression is displayed live underneath
   (`point AND (nod OR shake) AND NOT overlap, within 2000 ms measured at beginning`).
 - Validation with inline messages (only-NOT query, empty group); a query tier that is missing
   in at least one file of the corpus blocks execution with an error naming the file(s) — the
   same rule as in View 2 (§6.2).
+- **Expressiveness (all AND/OR/NOT combinations).** The builder represents an arbitrary
+  boolean tree (NOT on any term or group; unlimited nesting). Evaluation distributes the
+  positive AND/OR structure into DNF clauses (`core/query._to_clauses`) and evaluates each
+  disjunct independently with its own anchor, so OR is correct at any depth — including a
+  top-level OR of compounds with **different** leading terms such as
+  `(A AND B) OR (C AND D)`. (The earlier single-anchor evaluator mis-handled this when the
+  OR was wrapped in the mandatory AND root, conjoining every disjunct with the first term;
+  the clause rewrite fixes it.) A relation-bearing group keeps its relation as one clause.
 - **Saved queries:** name + expression stored in the project JSON (should-have).
 
 ### 7.3 Instance browser

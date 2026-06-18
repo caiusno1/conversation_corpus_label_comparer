@@ -241,3 +241,39 @@ def test_transitions_compound_mode_with_free_variable(app, tmp_path):
     # A[a] occurs twice and is followed both times, A[b] once, B once (the trailing
     # B has no successor).
     assert rows == ["A[a]  (n=2)", "A[b]  (n=1)", "B  (n=1)"]
+
+
+def test_query_view_text_input_with_brackets(app, tmp_path):
+    window = MainWindow()
+    controller = window.controller
+    f = write_eaf(
+        tmp_path / "f.eaf",
+        tiers={
+            "A": [("a", 0, 10)],
+            "B": [("b", 100, 110)],
+            "C": [("c", 5000, 5010)],
+            "D": [("d", 5100, 5110)],
+        },
+    )
+    controller.add_corpus("C")
+    controller.add_files("C", [f])
+
+    tabs = window.centralWidget()
+    query_view = tabs.widget(4)
+    query_view.corpus_combo.setCurrentText("C")
+
+    # Type a bracketed disjunction and apply it to the tree.
+    query_view.builder_widget.text_input.setText("(A = a AND B = b) OR (C = c AND D = d)")
+    query_view.builder_widget._apply_text()
+    assert query_view.builder_widget.parse_error.text() == ""
+    assert query_view.builder_widget.root_group().op == "OR"
+
+    query_view.distance.setValue(1000)
+    query_view._run()
+    # both well-separated compounds are found (OR no longer collapses to one)
+    assert len(query_view._instances) == 2
+
+    # a malformed expression reports an error and leaves the tree intact
+    query_view.builder_widget.text_input.setText("(A = a AND")
+    query_view.builder_widget._apply_text()
+    assert "Cannot parse" in query_view.builder_widget.parse_error.text()

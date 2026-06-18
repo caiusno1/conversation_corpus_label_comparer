@@ -346,3 +346,131 @@ def test_all_term_as_anchor(tmp_path):
     expr = Group("AND", [Term("G", "", free=True)])
     instances = evaluate(project, corpus, _q(expr, distance=1000))
     assert [i.matched["ALL G"].value for i in instances] == ["a", "b", "a"]
+
+
+# --- OR evaluated correctly at any nesting (DNF clauses) -----------------------
+
+
+def test_top_level_or_with_distinct_anchors(tmp_path):
+    # (A AND B) OR (C AND D), the two compounds far apart -> two instances,
+    # whether OR is the root or wrapped in the (editor-forced) AND root.
+    project, corpus = _single_file(
+        tmp_path,
+        {
+            "A": [("a", 0, 10)],
+            "B": [("b", 100, 110)],
+            "C": [("c", 5000, 5010)],
+            "D": [("d", 5100, 5110)],
+        },
+    )
+    ab = Group("AND", [Term("A", "a"), Term("B", "b")])
+    cd = Group("AND", [Term("C", "c"), Term("D", "d")])
+    assert len(evaluate(project, corpus, _q(Group("OR", [ab, cd])))) == 2
+    assert len(evaluate(project, corpus, _q(Group("AND", [Group("OR", [ab, cd])])))) == 2
+
+
+def test_nested_or_distributes(tmp_path):
+    # A AND (B OR C): matches A with either B or C nearby
+    project, corpus = _single_file(
+        tmp_path,
+        {"A": [("a", 0, 10)], "B": [("nope", 0, 1)], "C": [("c", 200, 210)]},
+    )
+    expr = Group("AND", [Term("A", "a"), Group("OR", [Term("B", "b"), Term("C", "c")])])
+    assert len(evaluate(project, corpus, _q(expr))) == 1
+
+
+# --- textual query syntax ------------------------------------------------------
+
+
+def test_parse_simple_and_or_not():
+    from cclc.core.query import parse_query
+
+    g = parse_query('Gesture = "point" AND Head = nod')
+    assert g.op == "AND"
+    assert [(t.tier, t.label, t.negated) for t in g.children] == [
+        ("Gesture", "point", False),
+        ("Head", "nod", False),
+    ]
+
+    g2 = parse_query("A = x OR B = y")
+    assert g2.op == "OR"
+
+    g3 = parse_query("A = x AND NOT B = y")
+    assert g3.children[1].negated is True
+
+
+def test_parse_brackets_precedence():
+    from cclc.core.query import parse_query
+
+    # without brackets: OR is lowest, so this is A AND (default precedence)
+    flat = parse_query("A = x AND B = y OR C = z")
+    assert flat.op == "OR"  # top level is OR
+    assert flat.children[0].op == "AND"  # (A AND B)
+    # brackets override: A AND (B OR C)
+    grouped = parse_query("A = x AND (B = y OR C = z)")
+    assert grouped.op == "AND"
+    assert grouped.children[1].op == "OR"
+
+
+def test_parse_all_and_quoting_and_relation():
+    from cclc.core.query import parse_query
+
+    g = parse_query('"My Tier" = "hello there" AND ALL Head')
+    assert g.children[0].tier == "My Tier"
+    assert g.children[0].label == "hello there"
+    assert g.children[1].free is True and g.children[1].tier == "Head"
+
+    rel = parse_query("(A = x AND B = y) [overlaps]")
+    assert rel.op == "AND" and rel.relation == "overlaps"
+
+
+def test_parse_not_group_and_double_not():
+    from cclc.core.query import parse_query
+
+    g = parse_query("A = x AND NOT (B = y OR C = z)")
+    assert g.children[1].negated is True and g.children[1].op == "OR"
+    assert parse_query("NOT NOT A = x").children[0].negated is False
+
+
+def test_parse_errors():
+    import pytest
+
+    from cclc.core.query import QueryParseError, parse_query
+
+    for bad in ["", "A =", "A = x AND", "(A = x", 'A = "unterminated', "A x"]:
+        with pytest.raises(QueryParseError):
+            parse_query(bad)
+
+
+def test_query_string_round_trip():
+    from cclc.core.query import parse_query, to_query_string
+
+    for text in [
+        'Gesture = "point"',
+        'A = x AND B = y',
+        'A = x OR B = y',
+        'A = x AND NOT B = y',
+        'A = x AND (B = y OR C = z)',
+        '(A = x AND B = y) [overlaps]',
+        'ALL Head AND "My Tier" = "hello there"',
+        'NOT (A = x OR B = y)',
+    ]:
+        root = parse_query(text)
+        # serialising and re-parsing yields the same string (stable normal form)
+        assert to_query_string(parse_query(to_query_string(root))) == to_query_string(root)
+
+
+def test_parsed_query_evaluates(tmp_path):
+    from cclc.core.query import Query, parse_query
+
+    project, corpus = _single_file(
+        tmp_path,
+        {
+            "A": [("a", 0, 10)],
+            "B": [("b", 100, 110)],
+            "C": [("c", 5000, 5010)],
+            "D": [("d", 5100, 5110)],
+        },
+    )
+    root = parse_query("(A = a AND B = b) OR (C = c AND D = d)")
+    assert len(evaluate(project, corpus, Query(root, max_distance_ms=1000))) == 2
